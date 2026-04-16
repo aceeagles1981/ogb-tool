@@ -2888,7 +2888,7 @@ async function handleFiles(files){
     try{
       document.getElementById('parse-msg').textContent=`Parsing ${file.name}...`;
       const fd=new FormData(); fd.append('file',file);
-      const res=await fetch(`${BACKEND}/parse`,{method:'POST',body:fd});
+      const res=await fetch(`${BACKEND}/parse`,{method:'POST',body:fd,headers:authHeaders()});
       const data=await res.json();
       if(data.error){errors.push(`${file.name}: ${data.error}`);continue;}
       combined+=(combined?'\n\n':'')+data.clean_text;
@@ -4381,7 +4381,7 @@ async function hiFile(files){
     fd.append('file', files[0]);
     fd.append('insureds', JSON.stringify(insuredList));
     procMsg.textContent = 'Generating account note...';
-    var res = await fetch(BACKEND + '/ingest-email', {method:'POST', body:fd});
+    var res = await fetch(BACKEND + '/ingest-email', {method:'POST', body:fd, headers: authHeaders()});
     var data = await res.json();
     if(data.error){ proc.style.display='none'; showNotice('Error: '+data.error,'err'); return; }
 
@@ -4574,7 +4574,7 @@ async function handleEmailFile(files){
     fd.append('file', file);
     fd.append('insureds', JSON.stringify(insuredList));
     document.getElementById('email-proc-msg').textContent='Generating account note...';
-    const res = await fetch(BACKEND+'/ingest-email',{method:'POST',body:fd});
+    const res = await fetch(BACKEND+'/ingest-email',{method:'POST',body:fd, headers: authHeaders()});
     const data = await res.json();
     if(data.error){proc.style.display='none';showNotice('Error: '+data.error,'err');return;}
     const note = data.note||{};
@@ -6654,7 +6654,7 @@ async function batchStart(){
       const fd = new FormData();
       fd.append('file', file);
       fd.append('insureds', JSON.stringify(insuredList));
-      const res = await fetch(BACKEND+'/ingest-email',{method:'POST',body:fd});
+      const res = await fetch(BACKEND+'/ingest-email',{method:'POST',body:fd, headers: authHeaders()});
       if(!res.ok) throw new Error('HTTP '+res.status);
       const data = await res.json();
       if(data.error) throw new Error(data.error);
