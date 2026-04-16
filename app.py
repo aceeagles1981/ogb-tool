@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -754,6 +753,29 @@ def log_event(conn, entity_type: str, entity_id: int, event_type: str, payload: 
             """,
             (entity_type, entity_id, event_type, json.dumps(payload or {}), user_id),
         )
+
+
+def get_risk_row(conn, risk_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch a single risk row with account/matter names joined."""
+    with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute("""
+            SELECT r.*,
+                   a.canonical_name AS account_name,
+                   m.title AS matter_title
+            FROM risks r
+            LEFT JOIN accounts a ON a.id = r.account_id
+            LEFT JOIN matters m ON m.id = r.matter_id
+            WHERE r.id = %s
+        """, (risk_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def append_note(existing: Optional[str], new_text: str) -> str:
+    """Append text to an existing notes field with separator."""
+    if not existing or not existing.strip():
+        return new_text
+    return existing.rstrip() + "\n\n" + new_text
 
 
 def serialise_risk(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -1540,6 +1562,71 @@ def update_task(task_id: int):
             """, (task_id,))
             row = dict(cur.fetchone())
     return jsonify(serialise_task(row))
+
+
+@app.route('/risks/<int:risk_id>/store-extractions', methods=['POST'])
+@require_admin
+def store_extractions_endpoint(risk_id):
+    """Store pre-processed extractions against a risk."""
+    data = request.get_json()
+    extractions = data.get('extractions', [])
+    user_id = get_user_id_from_request() or 1
+    doc_ids = []
+    with get_conn() as conn:
+        for att in extractions:
+            classification = att.get('classification', {})
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO risk_documents
+                      (risk_id, filename, file_type, doc_type, doc_stage,
+                       source_party, extracted_by, extraction_confidence,
+                       extraction_error, received_date, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    risk_id,
+                    att.get('filename', 'unknown'),
+                    att.get('file_type', 'unknown'),
+                    classification.get('doc_type', 'unknown'),
+                    classification.get('doc_stage', 'indicated'),
+                    classification.get('source_party'),
+                    'claude-haiku-4-5-20251001',
+                    classification.get('confidence', 0.0),
+                    att.get('error'),
+                    date.today(),
+                    user_id
+                ))
+                doc_id = cur.fetchone()[0]
+                doc_ids.append(doc_id)
+            if att.get('terms'):
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO risk_terms
+                          (risk_document_id, risk_id, doc_stage, source_party,
+                           terms_json, effective_date)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        doc_id, risk_id,
+                        classification.get('doc_stage', 'indicated'),
+                        classification.get('source_party'),
+                        json.dumps(att['terms']),
+                        date.today()
+                    ))
+            if att.get('survey_findings'):
+                findings = att['survey_findings']
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO risk_survey_findings
+                          (risk_document_id, risk_id, findings_json,
+                           overall_rating, recommendations)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        doc_id, risk_id,
+                        json.dumps(findings),
+                        findings.get('overall_rating'),
+                        '\n'.join(findings.get('recommendations', []))
+                    ))
+    return jsonify({'document_ids': doc_ids})
 
 
 if __name__ == "__main__":
