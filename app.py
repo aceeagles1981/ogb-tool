@@ -9,7 +9,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from functools import wraps
@@ -29,6 +29,9 @@ try:
     import extract_msg  # type: ignore
 except Exception:
     extract_msg = None
+
+from workflow import workflow_bp
+from comparison import comparison_bp
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("og_backend")
@@ -52,6 +55,8 @@ elif CORS:
 else:
     logger.warning("flask-cors is unavailable. CORS headers will not be sent.")
 
+app.register_blueprint(workflow_bp)
+app.register_blueprint(comparison_bp)
 
 # -----------------------------------------------------------------------------
 # Security helpers
