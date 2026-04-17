@@ -2289,6 +2289,7 @@ function openBackendRiskCard(riskId){
             ${risk.notes ? '<div style="margin-top:8px;font-size:12px;color:var(--text2);white-space:pre-wrap">'+risk.notes+'</div>' : ''}
             ${risk.review_reason ? '<div class="notice warn" style="margin-top:8px">Review: '+risk.review_reason+'</div>' : ''}
           </div>
+          ${buildComplianceBadgeHtml(risk)}
           ${buildPostBindChecklistHtml(risk)}
           <div class="card" style="padding:12px 14px;margin-bottom:12px">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
@@ -2338,6 +2339,47 @@ async function completeRiskTask(taskId, riskId){
     openBackendRiskCard(riskId);
     renderPipeline();
   } catch(e){ showNotice('Task update failed: '+e.message,'err'); }
+}
+
+function buildComplianceBadgeHtml(risk) {
+  var ai = risk.ai_extracted || {};
+  var comp = ai.compliance;
+  var colors = {
+    pass: { bg: 'var(--ok-bg, #dcfce7)', col: 'var(--ok, #22c55e)', icon: '✓', label: 'CLEAR' },
+    review: { bg: 'var(--warn-bg, #fef3c7)', col: 'var(--warn, #f59e0b)', icon: '⚠', label: 'REVIEW' },
+    decline: { bg: 'var(--err-bg, #fef2f2)', col: 'var(--err, #ef4444)', icon: '✕', label: 'DECLINE' }
+  };
+
+  if (!comp) {
+    return '<div class="card" style="padding:10px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">' +
+      '<div style="font-size:12px;color:var(--text2)">Compliance: not screened</div>' +
+      '<button class="btn sm" onclick="runComplianceScreen(' + risk.id + ')">Run screen</button></div>';
+  }
+
+  var c = colors[comp.result] || colors.review;
+  return '<div class="card" style="padding:10px 14px;margin-bottom:12px;border-left:3px solid ' + c.col + '">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+      '<div><span style="display:inline-block;padding:2px 8px;border-radius:4px;background:' + c.bg + ';color:' + c.col + ';font-size:11px;font-weight:700">' + c.icon + ' Compliance: ' + c.label + '</span>' +
+      (comp.screened_at ? '<span style="font-size:10px;color:var(--text2);margin-left:8px">' + comp.screened_at.slice(0, 10) + '</span>' : '') + '</div>' +
+      '<button class="btn sm" onclick="runComplianceScreen(' + risk.id + ')">Re-screen</button>' +
+    '</div>' +
+    (comp.notes ? '<div style="font-size:11px;color:var(--text2);line-height:1.6">' + escapeHtml(comp.notes) + '</div>' : '') +
+    '</div>';
+}
+
+async function runComplianceScreen(riskId) {
+  showNotice('Running compliance screen...', 'info');
+  try {
+    var result = await apiFetch('/risks/' + riskId + '/compliance-screen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (result.compliance) {
+      var r = result.compliance.result;
+      showNotice('Compliance: ' + r.toUpperCase() + (result.compliance.notes ? ' — ' + result.compliance.notes.slice(0, 80) : ''), r === 'pass' ? 'ok' : r === 'decline' ? 'err' : 'warn');
+    }
+    openBackendRiskCard(riskId);
+  } catch(e) { showNotice('Compliance screen failed: ' + e.message, 'err'); }
 }
 
 function buildPostBindChecklistHtml(risk) {
@@ -6571,17 +6613,22 @@ async function batchStart(){
       const note = data.note||{};
       const match = data.match||{};
       const emailData = {from:data.from||'',to:data.to||'',body:stripEmailChain(data.body||'')};
+      const existingRisks = data.existing_risks || [];
 
       // Save contacts returned directly from backend
       if(data.contacts && data.contacts.length) upsertContacts(data.contacts, match.matched_name||'');
 
-      if(match.confidence==='high' && match.matched_id){
-        // Auto-save
-        batchAutoSave(note, match, ent);
+      if(match.matched_entity_id && match.confidence==='high'){
+        // Auto-save as entity note (not a new risk)
+        batchAutoSave(note, match, ent, existingRisks);
+        _batchStats.saved++;
+      } else if(match.confidence==='high' && match.matched_id){
+        // Legacy localStorage auto-save
+        batchAutoSave(note, match, ent, existingRisks);
         _batchStats.saved++;
       } else {
         // Queue for review
-        _batchQueue.push({file:file.name, note, match, emailData, insuredList:[...ent.insureds].sort((a,b)=>a.name.localeCompare(b.name))});
+        _batchQueue.push({file:file.name, note, match, emailData, existingRisks: existingRisks, insuredList:[...ent.insureds].sort((a,b)=>a.name.localeCompare(b.name))});
         _batchStats.queue++;
       }
     } catch(e){
@@ -6621,50 +6668,37 @@ function isDuplicateNote(ins, note){
   );
 }
 
-function batchAutoSave(note, match, ent){
-  const ins = ent.insureds.find(i=>i.id===match.matched_id);
-  if(!ins) { handleMissingLocalInsured(match.matched_id, 'batch auto-save'); return; }
-  if(!ins.notes) ins.notes=[];
-  // Skip if duplicate
-  if(isDuplicateNote(ins, note)){
-    _batchStats.skipped++;
-    return;
+function batchAutoSave(note, match, ent, existingRisks){
+  var entityId = match.matched_entity_id;
+  if(!entityId) {
+    // Fallback: try localStorage (legacy)
+    var ins = ent.insureds ? ent.insureds.find(function(i){ return i.id===match.matched_id; }) : null;
+    if(!ins) { _batchStats.skipped++; return; }
   }
-  const noteObj = {
-    id:'note-'+Date.now()+'-'+Math.random().toString(36).slice(2,5),
-    date:note.date||'',
-    handler:note.handler||'',
-    parties:note.parties||'',
-    summary:note.summary||'',
-    actions:note.actions||[],
-    statusChange:note.statusChange||'',
-    docType:note.docType||'general-correspondence',
-    terms:note.terms||{},
-    enquiryId:'',
-    source:'batch-auto'
-  };
-  ins.notes.push(noteObj);
-  // Save document if present
-  if(note.document && note.document.content){
-    if(!ins.documents) ins.documents=[];
-    ins.documents.push({
-      id:'doc-'+Date.now()+'-'+Math.random().toString(36).slice(2,5),
-      date:note.date||'',
-      type:note.document.type||'',
-      title:note.document.title||'',
-      content:note.document.content||'',
-      source:'batch-auto'
-    });
-  }
-  // Save loss record entries if present
-  if(note.lossRecord && note.lossRecord.length){
-    if(!ins.lossRecord) ins.lossRecord=[];
-    note.lossRecord.forEach(lr=>{
-      const exists = ins.lossRecord.some(x=>x.year===lr.year);
-      if(!exists) ins.lossRecord.push(lr);
-    });
-  }
-  entSave(ent);
+
+  // Save as entity note in PG
+  (async function(){
+    try {
+      await apiFetch('/entities/' + entityId + '/notes', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          note_date: note.date || '',
+          handler: note.handler || '',
+          parties: note.parties || '',
+          summary: note.summary || '',
+          actions: note.actions || [],
+          status_change: note.statusChange || '',
+          doc_type: note.docType || 'general-correspondence',
+          terms: note.terms || {},
+          risk_id: (existingRisks && existingRisks.length) ? existingRisks[0].id : null,
+          source: 'batch-auto'
+        })
+      });
+    } catch(e) {
+      console.warn('Batch entity note save failed:', e.message);
+    }
+  })();
 }
 
 function renderReviewItem(){
@@ -6688,6 +6722,14 @@ function renderReviewItem(){
   const currentYear = new Date().getFullYear();
   const actionLines = Array.isArray(note.actions) ? note.actions.filter(Boolean) : [];
 
+  var existingRisksHtml = '';
+  if(item.existingRisks && item.existingRisks.length) {
+    existingRisksHtml = '<div style="padding:8px 12px;border-radius:6px;background:var(--ok-bg, #dcfce7);border:1px solid var(--ok, #22c55e)30;font-size:12px;margin-bottom:12px">' +
+      '<div style="color:var(--ok, #22c55e);font-weight:600;margin-bottom:4px">Existing risk' + (item.existingRisks.length > 1 ? 's' : '') + ' found — this email will be saved as a note, not a new risk</div>' +
+      item.existingRisks.map(function(r){ return '<div style="font-size:11px;color:var(--text2)">Risk #' + r.id + ': ' + (r.assured_name||'') + ' · ' + (r.status||'') + ' · ' + (r.inception_date||'—') + '</div>'; }).join('') +
+      '</div>';
+  }
+
   document.getElementById('review-item').innerHTML = `
     <div style="font-size:11px;color:var(--text2);margin-bottom:8px">📄 ${item.file}</div>
     <div style="padding:8px 12px;border-radius:6px;background:var(--bg);border:1px solid var(--border);font-size:12px;margin-bottom:12px">
@@ -6695,6 +6737,7 @@ function renderReviewItem(){
       ${match.matched_name ? ` — suggested: <strong>${match.matched_name}</strong>` : ' — no match found'}
       ${match.reason ? `<br><span class="muted">${match.reason}</span>` : ''}
     </div>
+    ${existingRisksHtml}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:12px;font-size:12px">
       <div><div class="muted" style="font-size:10px">DATE</div><div>${note.date||'—'}</div></div>
       <div><div class="muted" style="font-size:10px">HANDLER</div><div>${note.handler||'—'}</div></div>
@@ -6927,31 +6970,67 @@ function reviewSave(){
   const saveBtn = document.getElementById('batch-review-save-btn');
   const msg = document.getElementById('batch-risk-msg');
   const taskMsg = document.getElementById('batch-task-msg');
-  const payload = {
-    assured_name: assured,
-    display_name: assured,
-    producer: '',
-    handler: ((item.note||{}).handler || '').trim(),
-    region: '',
-    product: (document.getElementById('batch-risk-product').value||'').trim(),
-    layer: '',
-    status: document.getElementById('batch-risk-status').value || 'submission',
-    accounting_year: parseInt(document.getElementById('batch-risk-year').value || new Date().getFullYear(),10),
-    inception_date: document.getElementById('batch-risk-inception').value || null,
-    expiry_date: document.getElementById('batch-risk-expiry').value || null,
-    currency: document.getElementById('batch-risk-ccy').value || 'USD',
-    gross_premium: parseFloat(document.getElementById('batch-risk-premium').value) || null,
-    brokerage_pct: parseFloat(document.getElementById('batch-risk-brokerage').value) || null,
-    retained_pct: parseFloat(document.getElementById('batch-risk-retained').value) || null,
-    estimated_gbp_commission: parseFloat(document.getElementById('batch-risk-comm').value) || null,
-    notes: (document.getElementById('batch-risk-notes').value || '').trim(),
-    ai_extracted: window._lastBatchRiskDraft || {},
-    needs_review: true,
-    review_reason: ((window._lastBatchRiskDraft||{}).review_reason || 'Created from batch ingest review')
-  };
+
+  // Check if this email matches an existing entity with existing risks
+  var matchedEntityId = (item.match && item.match.matched_entity_id) || null;
+  var existingRisks = item.existingRisks || [];
+
   (async function(){
     try {
       if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+
+      // If entity matched with existing risks, save as note on entity instead of new risk
+      if(matchedEntityId && existingRisks.length > 0) {
+        var targetRiskId = existingRisks[0].id;
+        await apiFetch('/entities/' + matchedEntityId + '/notes', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            note_date: (item.note||{}).date || '',
+            handler: (item.note||{}).handler || '',
+            parties: (item.note||{}).parties || '',
+            summary: (item.note||{}).summary || '',
+            actions: (item.note||{}).actions || [],
+            status_change: (item.note||{}).statusChange || '',
+            doc_type: (item.note||{}).docType || 'general-correspondence',
+            risk_id: targetRiskId,
+            source: 'batch-review'
+          })
+        });
+        _batchStats.saved++;
+        _batchStats.queue = Math.max(0,_batchStats.queue-1);
+        batchUpdateStats();
+        if(msg) msg.textContent = 'Saved as note on existing risk #' + targetRiskId;
+        showNotice('✓ Note added to ' + (item.match.matched_name || assured) + ' (risk #' + targetRiskId + ')', 'ok');
+        _reviewIdx++;
+        renderReviewItem();
+        return;
+      }
+
+      // Otherwise create new risk
+      var payload = {
+        assured_name: assured,
+        display_name: assured,
+        producer: '',
+        handler: ((item.note||{}).handler || '').trim(),
+        region: '',
+        product: (document.getElementById('batch-risk-product').value||'').trim(),
+        layer: '',
+        status: document.getElementById('batch-risk-status').value || 'submission',
+        accounting_year: parseInt(document.getElementById('batch-risk-year').value || new Date().getFullYear(),10),
+        inception_date: document.getElementById('batch-risk-inception').value || null,
+        expiry_date: document.getElementById('batch-risk-expiry').value || null,
+        currency: document.getElementById('batch-risk-ccy').value || 'USD',
+        gross_premium: parseFloat(document.getElementById('batch-risk-premium').value) || null,
+        brokerage_pct: parseFloat(document.getElementById('batch-risk-brokerage').value) || null,
+        retained_pct: parseFloat(document.getElementById('batch-risk-retained').value) || null,
+        estimated_gbp_commission: parseFloat(document.getElementById('batch-risk-comm').value) || null,
+        notes: (document.getElementById('batch-risk-notes').value || '').trim(),
+        entity_id: matchedEntityId || null,
+        ai_extracted: window._lastBatchRiskDraft || {},
+        needs_review: true,
+        review_reason: ((window._lastBatchRiskDraft||{}).review_reason || 'Created from batch ingest review')
+      };
       var row = await apiFetch('/risks', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       var taskResult = await saveBatchTaskDrafts(row.id);
       _batchStats.saved++;

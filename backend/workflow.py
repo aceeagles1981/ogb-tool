@@ -25,7 +25,7 @@ You must return ONLY valid JSON with these sections:
 
 {
   "email_classification": {
-    "type": "submission | renewal | feedback | endorsement | query | update | firm_order | claim",
+    "type": "submission | renewal | feedback | endorsement | query | update | firm_order | claim | binding_confirmation | evidence_of_cover | invoice | closing | subjectivity_clearance | formal_offer",
     "confidence": 0.95,
     "summary": "One sentence describing what this email is about"
   },

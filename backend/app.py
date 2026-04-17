@@ -1196,6 +1196,44 @@ def ingest_email():
             "reason": "Name extracted from email" if candidates else "No account name found",
         }
 
+        # Match against PG entities
+        entity_match = None
+        existing_risks = []
+        if candidates:
+            with get_conn() as conn2:
+                with conn2.cursor(row_factory=psycopg.rows.dict_row) as cur2:
+                    for cand in candidates:
+                        cand_lower = normalise_name(cand)
+                        if not cand_lower:
+                            continue
+                        # Exact match first
+                        cur2.execute("SELECT id, name, entity_type, parent_id FROM entities WHERE LOWER(name) = %s AND entity_type = 'insured'", (cand_lower,))
+                        row2 = cur2.fetchone()
+                        if not row2:
+                            # Substring match
+                            cur2.execute("SELECT id, name, entity_type, parent_id FROM entities WHERE entity_type = 'insured' AND (LOWER(name) LIKE %s OR %s LIKE '%%' || LOWER(name) || '%%') ORDER BY LENGTH(name) DESC LIMIT 1",
+                                         (f"%{cand_lower}%", cand_lower))
+                            row2 = cur2.fetchone()
+                        if row2:
+                            entity_match = dict(row2)
+                            match["matched_entity_id"] = row2["id"]
+                            match["matched_name"] = row2["name"]
+                            match["confidence"] = "high"
+                            match["reason"] = f"Matched entity: {row2['name']} (id={row2['id']})"
+                            # Find existing risks for this entity
+                            cur2.execute("""
+                                SELECT id, assured_name, status, accounting_year, inception_date
+                                FROM risks
+                                WHERE entity_id = %s AND merged_into_risk_id IS NULL
+                                ORDER BY accounting_year DESC, id DESC
+                                LIMIT 5
+                            """, (row2["id"],))
+                            existing_risks = [dict(r) for r in cur2.fetchall()]
+                            for r in existing_risks:
+                                if r.get("inception_date"):
+                                    r["inception_date"] = str(r["inception_date"])
+                            break
+
         return jsonify({
             "success": True,
             "saved": True,
@@ -1220,6 +1258,8 @@ def ingest_email():
             "ingest": ingest,
             "note": note,
             "match": match,
+            "entity_match": entity_match,
+            "existing_risks": existing_risks,
         })
     except Exception as e:
         logger.exception("Ingest failed")
@@ -2236,6 +2276,272 @@ def import_entities():
         log_event(conn, "entity", 0, "bulk_import", results, user_id)
 
     return jsonify({"ok": True, **results})
+
+
+# -----------------------------------------------------------------------------
+# P5: Auto-compliance screening
+# -----------------------------------------------------------------------------
+
+SANCTIONED_HARD = ['iran', 'syria', 'north korea', 'cuba', 'myanmar', 'sudan', 'south sudan', 'somalia']
+SANCTIONED_REVIEW = ['russia', 'belarus', 'venezuela', 'nicaragua', 'zimbabwe', 'mali',
+                     'central african republic', 'libya', 'yemen', 'haiti']
+SANCTIONED_NOTES = {
+    'russia': 'Extensive US/UK/EU sectoral sanctions. Screen all entities carefully.',
+    'venezuela': 'Sanctions partially eased (OFAC GL46/46A) for oil sector only. General blocking sanctions remain.',
+    'cuba': 'Comprehensive US sanctions. Lloyd\'s may cover under UK/EU rules — confirm applicable law.',
+    'belarus': 'Significant US/UK/EU sanctions post-2021. Screen entities.',
+    'myanmar': 'UK/EU/US targeted sanctions on military and connected entities.'
+}
+
+
+def run_compliance_screen(risk_row: Dict[str, Any], entity_row: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Run territory check + AI entity screen. Returns compliance result dict."""
+    # Gather text to scan for territory flags
+    scan_parts = [
+        risk_row.get("region") or "",
+        risk_row.get("notes") or "",
+        risk_row.get("assured_name") or "",
+        risk_row.get("producer") or "",
+    ]
+    ai_extracted = risk_row.get("ai_extracted") or {}
+    if isinstance(ai_extracted, str):
+        try:
+            ai_extracted = json.loads(ai_extracted)
+        except Exception:
+            ai_extracted = {}
+    scan_parts.append(ai_extracted.get("cedant") or "")
+
+    if entity_row:
+        scan_parts.append(entity_row.get("region") or "")
+        meta = entity_row.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        scan_parts.append(json.dumps(meta))
+
+    combined = " ".join(scan_parts).lower()
+
+    hard_flags = [c for c in SANCTIONED_HARD if c in combined]
+    review_flags = [c for c in SANCTIONED_REVIEW if c in combined]
+    territory_result = "decline" if hard_flags else ("review" if review_flags else "pass")
+
+    # AI entity screen
+    ai_result = None
+    ai_overall = None
+    if ANTHROPIC_API_KEY:
+        sys_prompt = (
+            "You are a Lloyd's marine cargo compliance officer at OG Broking. "
+            "Screen these placement entities for: (1) OFAC/HMT/UN/EU sanctions list matches, "
+            "(2) adverse news - financial crime, money laundering, corruption, terrorism, "
+            "(3) PEP indicators. "
+            "Sanctions context Apr 2026: Iran/Syria/North Korea/Cuba/Myanmar/Sudan = comprehensive. "
+            "Russia/Belarus = extensive sectoral. Venezuela = partially eased oil sector only. "
+            "For each entity: Name: CLEAR / FLAG / UNKNOWN + brief reason. "
+            "End with OVERALL: CLEAR / REVIEW / DECLINE. "
+            "Return plain text, not HTML."
+        )
+        data = {
+            "insured": risk_row.get("assured_name") or "",
+            "region": risk_row.get("region") or "",
+            "cedant": ai_extracted.get("cedant") or "",
+            "producer": risk_row.get("producer") or "",
+            "quoteLeader": ai_extracted.get("quoteLeader") or "",
+            "notes": (risk_row.get("notes") or "")[:300],
+        }
+        try:
+            ai_text_result = anthropic_text({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 600,
+                "system": sys_prompt,
+                "messages": [{"role": "user", "content": "Screen this placement:\n" + json.dumps(data, indent=2)}],
+            })
+            ai_result = ai_text_result
+            upper = ai_text_result.upper()
+            if "OVERALL: DECLINE" in upper or "OVERALL:DECLINE" in upper:
+                ai_overall = "decline"
+            elif "OVERALL: REVIEW" in upper or "OVERALL:REVIEW" in upper:
+                ai_overall = "review"
+            elif "OVERALL: CLEAR" in upper or "OVERALL:CLEAR" in upper:
+                ai_overall = "pass"
+            else:
+                ai_overall = "review"
+        except Exception as e:
+            ai_result = f"AI screen error: {str(e)}"
+            ai_overall = "review"
+
+    # Combine results
+    priority = {"decline": 3, "review": 2, "pass": 1}
+    final_result = territory_result
+    if ai_overall and priority.get(ai_overall, 0) > priority.get(final_result, 0):
+        final_result = ai_overall
+
+    notes_parts = []
+    if hard_flags:
+        notes_parts.append(f"Sanctioned territory: {', '.join(hard_flags)}")
+    if review_flags:
+        notes_parts.append(f"High-risk jurisdiction: {', '.join(review_flags)}")
+        for c in review_flags:
+            if c in SANCTIONED_NOTES:
+                notes_parts.append(f"  {c}: {SANCTIONED_NOTES[c]}")
+    if ai_overall and ai_overall != "pass":
+        notes_parts.append(f"AI entity screen: {ai_overall.upper()}")
+    if not ANTHROPIC_API_KEY:
+        notes_parts.append("AI entity screen skipped — no API key")
+
+    return {
+        "result": final_result,
+        "territory_result": territory_result,
+        "ai_result": ai_overall,
+        "hard_flags": hard_flags,
+        "review_flags": review_flags,
+        "ai_text": ai_result,
+        "notes": "; ".join(notes_parts) if notes_parts else "Clear — no territory or entity flags",
+        "screened_at": now_utc().isoformat(),
+    }
+
+
+@app.post("/risks/<int:risk_id>/compliance-screen")
+@require_admin
+@rate_limited("ai")
+def compliance_screen_risk(risk_id: int):
+    """Run compliance screening on a risk. Stores result in ai_extracted and creates a task if flagged."""
+    user_id = get_user_id_from_request()
+    with get_conn() as conn:
+        row = get_risk_row(conn, risk_id)
+        if not row:
+            return jsonify({"error": "Risk not found"}), 404
+
+        # Get linked entity if available
+        entity_row = None
+        if row.get("entity_id"):
+            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                cur.execute("SELECT * FROM entities WHERE id = %s", (row["entity_id"],))
+                entity_row = cur.fetchone()
+                if entity_row:
+                    entity_row = dict(entity_row)
+
+        result = run_compliance_screen(row, entity_row)
+
+        # Store in ai_extracted
+        ai_ext = row.get("ai_extracted") or {}
+        if isinstance(ai_ext, str):
+            try:
+                ai_ext = json.loads(ai_ext)
+            except Exception:
+                ai_ext = {}
+        ai_ext["compliance"] = result
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE risks SET ai_extracted = %s, updated_at = NOW() WHERE id = %s",
+                (json.dumps(ai_ext), risk_id)
+            )
+
+        # Create compliance task if flagged
+        if result["result"] != "pass":
+            task_title = f"Compliance {result['result'].upper()} — {row.get('assured_name', 'Unknown')}"
+            task_desc = result["notes"]
+            if result.get("ai_text"):
+                task_desc += "\n\nAI screening notes:\n" + result["ai_text"][:500]
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO risk_tasks (risk_id, title, description, priority, status, source)
+                    VALUES (%s, %s, %s, %s, 'open', 'auto_compliance')
+                """, (
+                    risk_id, task_title, task_desc,
+                    "urgent" if result["result"] == "decline" else "high"
+                ))
+
+            log_event(conn, "risk", risk_id, "compliance_screened", result, user_id)
+
+    return jsonify({"ok": True, "compliance": result})
+
+
+# -----------------------------------------------------------------------------
+# P6: Auto-tick post-bind fields from email classification
+# -----------------------------------------------------------------------------
+
+# Maps email_classification types to post-bind fields
+POSTBIND_CLASSIFICATION_MAP = {
+    "binding_confirmation": {"pb_evidence_of_cover": True},
+    "evidence_of_cover": {"pb_evidence_of_cover": True},
+    "firm_order": {"pb_firm_order_date": "auto"},
+    "formal_offer": {"pb_formal_offer_date": "auto"},
+    "invoice": {"pb_invoice_sent": True},
+    "closing": {"pb_closings_sent": True},
+    "subjectivity_clearance": {"pb_subjectivities_cleared": True},
+}
+
+
+@app.post("/risks/<int:risk_id>/auto-tick")
+@require_admin
+@rate_limited("default_write")
+def auto_tick_risk(risk_id: int):
+    """Auto-tick post-bind fields based on email classification type.
+
+    Payload:
+    {
+        "classification_type": "binding_confirmation",
+        "email_date": "2026-03-27",
+        "source": "workflow"
+    }
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    classification_type = (payload.get("classification_type") or "").strip().lower()
+    email_date = payload.get("email_date")
+    user_id = get_user_id_from_request()
+
+    field_updates = POSTBIND_CLASSIFICATION_MAP.get(classification_type)
+    if not field_updates:
+        return jsonify({"ok": True, "ticked": [], "message": "No post-bind mapping for this type"})
+
+    with get_conn() as conn:
+        row = get_risk_row(conn, risk_id)
+        if not row:
+            return jsonify({"error": "Risk not found"}), 404
+
+        # Only auto-tick for bound risks
+        if canonical_risk_status(row.get("status")) not in ("bound", "renewal_pending", "expired_review"):
+            return jsonify({"ok": True, "ticked": [], "message": "Risk not in post-bind status"})
+
+        updates = []
+        params = []
+        ticked = []
+        for field, value in field_updates.items():
+            # Don't overwrite if already set
+            current = row.get(field)
+            if current and current is not False:
+                continue
+            if value == "auto":
+                # Date field — use email_date or today
+                updates.append(f"{field} = %s")
+                params.append(email_date or str(date.today()))
+            else:
+                updates.append(f"{field} = %s")
+                params.append(True)
+            ticked.append(field)
+
+        if updates:
+            updates.append("updated_at = NOW()")
+            params.append(risk_id)
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE risks SET {', '.join(updates)} WHERE id = %s", params)
+            log_event(conn, "risk", risk_id, "post_bind_auto_ticked", {
+                "ticked": ticked, "classification_type": classification_type, "source": payload.get("source")
+            }, user_id)
+
+    label_map = {
+        "pb_evidence_of_cover": "Evidence of cover",
+        "pb_subjectivities_cleared": "Subjectivities cleared",
+        "pb_invoice_sent": "Invoice sent",
+        "pb_closings_sent": "Closings sent",
+        "pb_firm_order_date": "Firm order date",
+        "pb_formal_offer_date": "Formal offer date",
+    }
+    ticked_labels = [label_map.get(f, f) for f in ticked]
+
+    return jsonify({"ok": True, "ticked": ticked, "ticked_labels": ticked_labels})
 
 
 # -----------------------------------------------------------------------------

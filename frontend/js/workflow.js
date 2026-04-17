@@ -810,6 +810,50 @@ async function wfSaveAll() {
       showNotice('Risk "' + (risk.assured_name||'') + '" saved with ' + (outputs.tasks||[]).length + ' tasks', 'ok');
     }
 
+    // P5: Auto-compliance screening (runs async, doesn't block save)
+    if (riskId) {
+      try {
+        var compResp = await fetch(BACKEND + '/risks/' + riskId + '/compliance-screen', {
+          method: 'POST',
+          headers: Object.assign({'Content-Type': 'application/json'}, authHeaders())
+        });
+        var compData = await compResp.json();
+        if (compData.compliance && compData.compliance.result !== 'pass') {
+          var compResult = compData.compliance.result.toUpperCase();
+          if (typeof showNotice === 'function') {
+            showNotice('⚠ Compliance ' + compResult + ': ' + (compData.compliance.notes || '').slice(0, 100), compResult === 'DECLINE' ? 'err' : 'warn');
+          }
+        } else if (compData.compliance) {
+          if (typeof showNotice === 'function') {
+            showNotice('✓ Compliance: CLEAR', 'ok');
+          }
+        }
+      } catch(compErr) { console.warn('Auto-compliance skipped:', compErr); }
+    }
+
+    // P6: Auto-tick post-bind fields based on email classification
+    if (riskId && outputs.email_classification) {
+      var classType = (outputs.email_classification.type || '').toLowerCase().replace(/\s+/g, '_');
+      var emailDate = _workflowResult.email_parse ? (_workflowResult.email_parse.date || '').slice(0, 10) : '';
+      try {
+        var tickResp = await fetch(BACKEND + '/risks/' + riskId + '/auto-tick', {
+          method: 'POST',
+          headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()),
+          body: JSON.stringify({
+            classification_type: classType,
+            email_date: emailDate || null,
+            source: 'workflow'
+          })
+        });
+        var tickData = await tickResp.json();
+        if (tickData.ticked_labels && tickData.ticked_labels.length) {
+          if (typeof showNotice === 'function') {
+            showNotice('✓ Post-bind: ' + tickData.ticked_labels.join(', ') + ' auto-ticked', 'ok');
+          }
+        }
+      } catch(tickErr) { console.warn('Auto-tick skipped:', tickErr); }
+    }
+
     // Update button to show success
     if (btn) { btn.textContent = '✓ Saved'; btn.style.background = '#059669'; }
     setTimeout(function() {
