@@ -9,14 +9,14 @@ import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from functools import wraps
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+import psycopg.rows
 import requests
 from flask import Flask, jsonify, request
 
@@ -29,6 +29,9 @@ try:
     import extract_msg  # type: ignore
 except Exception:
     extract_msg = None
+
+from workflow import workflow_bp
+from comparison import comparison_bp
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("og_backend")
@@ -52,6 +55,17 @@ elif CORS:
 else:
     logger.warning("flask-cors is unavailable. CORS headers will not be sent.")
 
+# Explicit CORS handler — ensures preflight OPTIONS work for all routes including blueprints
+@app.after_request
+def add_cors_headers(response):
+    if FRONTEND_ORIGIN:
+        response.headers['Access-Control-Allow-Origin'] = FRONTEND_ORIGIN
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Admin-Token, X-User-Id, Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+    return response
+
+app.register_blueprint(workflow_bp)
+app.register_blueprint(comparison_bp)
 
 # -----------------------------------------------------------------------------
 # Security helpers
@@ -151,7 +165,7 @@ def _normalise_db_url(url: str) -> str:
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not configured")
-    conn = psycopg2.connect(_normalise_db_url(DATABASE_URL))
+    conn = psycopg.connect(_normalise_db_url(DATABASE_URL))
     try:
         yield conn
         conn.commit()
@@ -751,6 +765,29 @@ def log_event(conn, entity_type: str, entity_id: int, event_type: str, payload: 
         )
 
 
+def get_risk_row(conn, risk_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch a single risk row with account/matter names joined."""
+    with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute("""
+            SELECT r.*,
+                   a.canonical_name AS account_name,
+                   m.title AS matter_title
+            FROM risks r
+            LEFT JOIN accounts a ON a.id = r.account_id
+            LEFT JOIN matters m ON m.id = r.matter_id
+            WHERE r.id = %s
+        """, (risk_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def append_note(existing: Optional[str], new_text: str) -> str:
+    """Append text to an existing notes field with separator."""
+    if not existing or not existing.strip():
+        return new_text
+    return existing.rstrip() + "\n\n" + new_text
+
+
 def serialise_risk(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": row.get("id"),
@@ -866,7 +903,7 @@ def health():
 @rate_limited("default_read")
 def list_users():
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 SELECT id, name, username, email, role, is_active, created_at
                 FROM users
@@ -970,7 +1007,7 @@ def ingest_email():
         }
 
         with get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 cur.execute("""
                     INSERT INTO events (
                         source_type, source_ref, event_at, subject, sender, recipients,
@@ -1097,7 +1134,7 @@ def list_risks():
     params.extend([limit, offset])
 
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(sql, params)
             items = [serialise_risk(dict(r)) | {"open_task_count": int(r.get("open_task_count") or 0)} for r in cur.fetchall()]
     return jsonify({"items": items, "total": len(items)})
@@ -1116,7 +1153,7 @@ def create_risk():
     assured_name = (payload.get("assured_name") or payload.get("display_name") or "").strip()
     accounting_year = parse_int_safe(payload.get("accounting_year"))
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 INSERT INTO risks (
                     assured_name, display_name, producer, handler, region, product, layer, status,
@@ -1229,7 +1266,7 @@ def update_risk(risk_id: int):
 @rate_limited("default_read")
 def risk_activity(risk_id: int):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 SELECT ae.*, u.name, u.username
                 FROM activity_events ae
@@ -1293,7 +1330,7 @@ def list_risk_ledger_entries(risk_id: int):
             cur.execute("SELECT 1 FROM risks WHERE id = %s", (risk_id,))
             if not cur.fetchone():
                 return jsonify({"error": "Risk not found"}), 404
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("SELECT * FROM risk_ledger_entries WHERE risk_id = %s ORDER BY COALESCE(entry_date, created_at) ASC, id ASC", (risk_id,))
             rows = [serialise_ledger_entry(dict(r)) for r in cur.fetchall()]
     return jsonify({"items": rows})
@@ -1320,7 +1357,7 @@ def create_risk_ledger_entry(risk_id: int):
             cur.execute("SELECT 1 FROM risks WHERE id = %s", (risk_id,))
             if not cur.fetchone():
                 return jsonify({"error": "Risk not found"}), 404
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 INSERT INTO risk_ledger_entries (
                     risk_id, entry_type, entry_date, accounting_year, currency,
@@ -1369,7 +1406,7 @@ def portfolio_by_year():
         ORDER BY LOWER(r.assured_name), r.id DESC
     """
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(sql, params)
             raw_rows = [dict(r) for r in cur.fetchall()]
     items, totals = [], {"count":0,"gross_premium":0.0,"estimated_gbp_commission":0.0,"locked_gbp_commission":0.0,"ledger_total_gbp":0.0,"ap_gbp":0.0,"rp_gbp":0.0,"pc_gbp":0.0,"adj_gbp":0.0,"open_task_count":0}
@@ -1428,7 +1465,7 @@ def list_tasks():
                       t.due_date NULLS LAST, t.id DESC LIMIT %s OFFSET %s"""
     params.extend([limit, offset])
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(sql, params)
             items = [serialise_task(dict(r)) for r in cur.fetchall()]
     return jsonify({"items": items, "total": len(items)})
@@ -1450,7 +1487,7 @@ def create_task():
             cur.execute("SELECT 1 FROM risks WHERE id = %s", (risk_id,))
             if not cur.fetchone():
                 return jsonify({"error": "Risk not found"}), 404
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 INSERT INTO risk_tasks (risk_id, title, description, owner, priority, status, due_date, source, source_event_id)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -1479,7 +1516,7 @@ def list_risk_tasks(risk_id: int):
             cur.execute("SELECT 1 FROM risks WHERE id = %s", (risk_id,))
             if not cur.fetchone():
                 return jsonify({"error": "Risk not found"}), 404
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 SELECT t.*, r.assured_name, r.display_name, r.producer, r.status AS risk_status, r.accounting_year
                 FROM risk_tasks t JOIN risks r ON r.id = t.risk_id
@@ -1528,13 +1565,78 @@ def update_task(task_id: int):
             cur.execute("SELECT risk_id FROM risk_tasks WHERE id = %s", (task_id,))
             risk_id = cur.fetchone()[0]
             log_event(conn, "risk", risk_id, "task_updated", payload, user_id)
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute("""
                 SELECT t.*, r.assured_name, r.display_name, r.producer, r.status AS risk_status, r.accounting_year
                 FROM risk_tasks t JOIN risks r ON r.id = t.risk_id WHERE t.id = %s
             """, (task_id,))
             row = dict(cur.fetchone())
     return jsonify(serialise_task(row))
+
+
+@app.route('/risks/<int:risk_id>/store-extractions', methods=['POST'])
+@require_admin
+def store_extractions_endpoint(risk_id):
+    """Store pre-processed extractions against a risk."""
+    data = request.get_json()
+    extractions = data.get('extractions', [])
+    user_id = get_user_id_from_request() or 1
+    doc_ids = []
+    with get_conn() as conn:
+        for att in extractions:
+            classification = att.get('classification', {})
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO risk_documents
+                      (risk_id, filename, file_type, doc_type, doc_stage,
+                       source_party, extracted_by, extraction_confidence,
+                       extraction_error, received_date, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    risk_id,
+                    att.get('filename', 'unknown'),
+                    att.get('file_type', 'unknown'),
+                    classification.get('doc_type', 'unknown'),
+                    classification.get('doc_stage', 'indicated'),
+                    classification.get('source_party'),
+                    'claude-haiku-4-5-20251001',
+                    classification.get('confidence', 0.0),
+                    att.get('error'),
+                    date.today(),
+                    user_id
+                ))
+                doc_id = cur.fetchone()[0]
+                doc_ids.append(doc_id)
+            if att.get('terms'):
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO risk_terms
+                          (risk_document_id, risk_id, doc_stage, source_party,
+                           terms_json, effective_date)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        doc_id, risk_id,
+                        classification.get('doc_stage', 'indicated'),
+                        classification.get('source_party'),
+                        json.dumps(att['terms']),
+                        date.today()
+                    ))
+            if att.get('survey_findings'):
+                findings = att['survey_findings']
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO risk_survey_findings
+                          (risk_document_id, risk_id, findings_json,
+                           overall_rating, recommendations)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        doc_id, risk_id,
+                        json.dumps(findings),
+                        findings.get('overall_rating'),
+                        '\n'.join(findings.get('recommendations', []))
+                    ))
+    return jsonify({'document_ids': doc_ids})
 
 
 if __name__ == "__main__":
