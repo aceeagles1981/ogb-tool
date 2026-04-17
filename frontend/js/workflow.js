@@ -573,7 +573,8 @@ function wfRenderTasks(tasks) {
           <div style="font-size:12px;font-weight:500;color:var(--text)">${t.title}</div>
           ${t.description ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">${t.description}</div>` : ''}
         </div>
-        <div style="display:flex;gap:4px;flex-shrink:0">
+        <div style="display:flex;gap:4px;flex-shrink:0;align-items:center">
+          ${t.due_date ? `<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:#F3F4F6;color:#374151">📅 ${t.due_date}</span>` : ''}
           <span style="font-size:9px;padding:2px 6px;border-radius:3px;background:${pc.bg};color:${pc.text}">${t.priority}</span>
           <span style="font-size:9px;padding:2px 6px;border-radius:3px;background:#E5E7EB;color:#374151">${t.owner || '—'}</span>
         </div>
