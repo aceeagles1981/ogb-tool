@@ -165,6 +165,20 @@ function renderWorkflowResult(container, result) {
 
   // Show first tab
   wfTab(tabs[0].id);
+
+  // Auto-trigger compliance screening if we have an insured name
+  var wfAssured = outputs.risk_draft?.assured_name;
+  if (wfAssured && typeof autoComplianceScreen === 'function') {
+    try {
+      // Run compliance in background — result will show as a banner if flagged
+      autoComplianceScreen(null, null, wfAssured).then(function(r) {
+        if (r && r.bannerHtml) {
+          var compArea = document.getElementById('wf-compliance-banner');
+          if (compArea) compArea.innerHTML = r.bannerHtml;
+        }
+      }).catch(function(){});
+    } catch(e) {}
+  }
 }
 
 
@@ -294,19 +308,47 @@ function wfRenderTerms(extractions) {
         </div>
         <div style="display:grid;grid-template-columns:140px 1fr;gap:4px 12px;font-size:11px">
           ${wfTermRow('Insured', t.insured)}
+          ${wfTermRow('Cedant', t.cedant)}
           ${wfTermRow('Goods', t.goods)}
           ${wfTermRow('Product', t.product)}
-          ${wfTermRow('Limit (conv)', t.limits?.any_one_conveyance ? `${t.limits.currency || ''} ${Number(t.limits.any_one_conveyance).toLocaleString()}` : null)}
-          ${wfTermRow('Limit (loc)', t.limits?.any_one_location ? `${t.limits.currency || ''} ${Number(t.limits.any_one_location).toLocaleString()}` : null)}
-          ${wfTermRow('Deductible', t.deductible ? `${t.deductible.currency || ''} ${Number(t.deductible.amount).toLocaleString()} ${t.deductible.basis || ''}` : null)}
-          ${wfTermRow('Rate', t.rate ? Object.entries(t.rate).map(([k,v]) => `${k}: ${(v*100).toFixed(3)}%`).join(', ') : null)}
-          ${wfTermRow('Premium', t.premium ? `${t.premium.currency || ''} ${Number(t.premium.amount).toLocaleString()} (${t.premium.basis || ''})` : null)}
+          ${wfTermRow('Annual Turnover', wfFormatTurnover(t.annual_turnover))}
+          ${wfTermRow('Limits', wfFormatLimits(t.limits))}
+          ${wfTermRow('Deductible', wfFormatDeductible(t.deductible))}
+          ${wfTermRow('Rate', wfFormatRate(t.rate))}
+          ${wfTermRow('Premium', wfFormatPremium(t.premium))}
           ${wfTermRow('Perils', t.perils)}
-          ${wfTermRow('Period', t.period ? `${t.period.inception} to ${t.period.expiry}` : null)}
-          ${wfTermRow('Brokerage', t.brokerage ? `${t.brokerage}%` : null)}
+          ${wfTermRow('War', t.war_cover === true ? 'Included' : t.war_cover === false ? 'Excluded' : null)}
+          ${wfTermRow('Strikes', t.strikes_cover === true ? 'Included' : t.strikes_cover === false ? 'Excluded' : null)}
+          ${wfTermRow('Period', wfFormatPeriod(t.period))}
+          ${wfTermRow('Valuation', t.valuation_basis)}
+          ${wfTermRow('Law', t.law_jurisdiction)}
+          ${wfTermRow('Brokerage', t.brokerage ? t.brokerage + '%' : null)}
+          ${wfTermRow('Loss History', t.loss_history)}
+          ${wfTermRow('Payment Terms', t.payment_terms)}
           ${wfTermRow('Exclusions', t.exclusions?.length ? t.exclusions.join('; ') : null)}
+          ${wfTermRow('Conditions', t.conditions?.length ? t.conditions.join('; ') : null)}
           ${wfTermRow('Policy Ref', t.policy_ref)}
         </div>
+        ${t.locations?.length ? `
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:4px">Locations</div>
+            ${t.locations.map(l => `
+              <div style="font-size:11px;color:var(--text);margin-bottom:2px">
+                ${l.name}${l.country ? ', ' + l.country : ''}
+                ${l.max_value ? ' — max ' + wfNum(l.max_value) : ''}
+                ${l.average_value ? ' / avg ' + wfNum(l.average_value) : ''}
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+        ${t.transits ? `
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:4px">Transits</div>
+            ${t.transits.imports_from?.length ? `<div style="font-size:11px;color:var(--text)">Imports from: ${t.transits.imports_from.join(', ')}</div>` : ''}
+            ${t.transits.exports_to?.length ? `<div style="font-size:11px;color:var(--text)">Exports to: ${t.transits.exports_to.join(', ')}</div>` : ''}
+            ${t.transits.domestic ? `<div style="font-size:11px;color:var(--text)">Domestic: ${t.transits.domestic}</div>` : ''}
+          </div>
+        ` : ''}
         ${t.subjectivities?.length ? `
           <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
             <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:4px">Subjectivities</div>
@@ -323,6 +365,74 @@ function wfRenderTerms(extractions) {
       </div>
     `;
   }).join('');
+}
+
+
+// ── Term formatting helpers ─────────────────────────────────────────────────
+
+function wfNum(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return Number(n).toLocaleString();
+}
+
+function wfFormatTurnover(t) {
+  if (!t) return null;
+  if (t.amount === null || t.amount === undefined || t.amount === 0) return null;
+  return (t.currency || 'USD') + ' ' + wfNum(t.amount);
+}
+
+function wfFormatLimits(l) {
+  if (!l) return null;
+  var ccy = l.currency || 'USD';
+  var parts = [];
+  if (l.ocean) parts.push('Ocean: ' + ccy + ' ' + wfNum(l.ocean));
+  if (l.any_one_conveyance) parts.push('Conveyance: ' + ccy + ' ' + wfNum(l.any_one_conveyance));
+  if (l.ground) parts.push('Ground: ' + ccy + ' ' + wfNum(l.ground));
+  if (l.air) parts.push('Air: ' + ccy + ' ' + wfNum(l.air));
+  if (l.storage || l.any_one_location) parts.push('Storage/Location: ' + ccy + ' ' + wfNum(l.storage || l.any_one_location));
+  if (l.natcat) parts.push('NatCat: ' + ccy + ' ' + wfNum(l.natcat));
+  if (l.unnamed_location) parts.push('Unnamed loc: ' + ccy + ' ' + wfNum(l.unnamed_location));
+  if (l.containers_on_deck) parts.push('On-deck: ' + ccy + ' ' + wfNum(l.containers_on_deck));
+  if (l.aggregate) parts.push('Aggregate: ' + ccy + ' ' + wfNum(l.aggregate));
+  if (l.any_one_loss) parts.push('Any one loss: ' + ccy + ' ' + wfNum(l.any_one_loss));
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function wfFormatDeductible(d) {
+  if (!d) return null;
+  var ccy = d.currency || 'USD';
+  var parts = [];
+  if (d.transit !== null && d.transit !== undefined) parts.push('Transit: ' + ccy + ' ' + wfNum(d.transit));
+  if (d.stock !== null && d.stock !== undefined) parts.push('Stock: ' + ccy + ' ' + wfNum(d.stock));
+  if (d.amount !== null && d.amount !== undefined && !d.transit) parts.push(ccy + ' ' + wfNum(d.amount));
+  if (d.natcat) parts.push('NatCat: ' + d.natcat);
+  if (d.basis && parts.length) parts.push('(' + d.basis + ')');
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function wfFormatRate(r) {
+  if (!r) return null;
+  var parts = [];
+  if (r.transit && r.transit > 0) parts.push('Transit: ' + (r.transit * 100).toFixed(4) + '%');
+  if (r.stock && r.stock > 0) parts.push('Stock: ' + (r.stock * 100).toFixed(4) + '%');
+  if (r.flat && r.flat > 0) parts.push('Flat: ' + (r.flat * 100).toFixed(4) + '%');
+  return parts.length ? parts.join(' · ') : 'Not stated';
+}
+
+function wfFormatPremium(p) {
+  if (!p) return 'Not stated';
+  if (p.amount === null || p.amount === undefined) return 'Not stated';
+  if (p.amount === 0) return 'Not stated';
+  return (p.currency || 'USD') + ' ' + wfNum(p.amount) + (p.basis ? ' (' + p.basis + ')' : '');
+}
+
+function wfFormatPeriod(p) {
+  if (!p) return null;
+  var inc = p.inception || 'TBC';
+  var exp = p.expiry || 'TBC';
+  if (inc === 'TBC' && exp === 'TBC') return 'Not yet confirmed';
+  var dur = p.duration_months ? ' (' + p.duration_months + ' months)' : '';
+  return inc + ' to ' + exp + dur;
 }
 
 
@@ -348,7 +458,7 @@ function wfRenderProposal(pf) {
       ${wfTermRow('Goods', pf.goods_description)}
       ${wfTermRow('Annual Turnover', pf.annual_turnover ? `${pf.annual_turnover.currency} ${Number(pf.annual_turnover.amount).toLocaleString()}` : null)}
       ${wfTermRow('Limits Requested', pf.limits_requested ? `Conv: ${pf.limits_requested.currency} ${Number(pf.limits_requested.conveyance||0).toLocaleString()} / Loc: ${Number(pf.limits_requested.location||0).toLocaleString()}` : null)}
-      ${wfTermRow('Deductible', pf.deductible_requested ? `${pf.deductible_requested.currency} ${Number(pf.deductible_requested.amount).toLocaleString()}` : null)}
+      ${wfTermRow('Deductible', wfFormatDeductible(pf.deductible_requested))}
       ${wfTermRow('Incoterms', pf.incoterms_split ? Object.entries(pf.incoterms_split).map(([k,v]) => `${k} ${v}%`).join(' / ') : null)}
       ${wfTermRow('Loss History', pf.loss_history)}
     </div>
