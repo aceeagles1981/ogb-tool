@@ -25,7 +25,7 @@ function pbOpenCompliance(insId, enqId){
   _pbInsId = insId; _pbEnqId = enqId;
   var ent = entGetState();
   var ins = (ent.insureds||[]).find(function(i){ return i.id===insId; });
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'open compliance screen'); return; }
   var enq = (ins.enquiries||[]).find(function(e){ return e.id===enqId; });
   if(!enq) return;
   var prod = (ent.producers||[]).find(function(p){ return p.id===ins.producerId; });

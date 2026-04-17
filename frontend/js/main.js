@@ -2183,7 +2183,66 @@ function renderRiskTimelineHtml(risk, tasks, ledger, activityItems){
   }).join('');
 }
 
+// handleMissingLocalInsured — called when a localStorage operation tries to
+// act on an insured ID that isn't in entGetState(). The ID might be:
+//   (a) a valid PG integer risk ID — in which case we can at least show the
+//       backend risk card (view-only; mutating operations aren't portable)
+//   (b) a legacy localStorage ID whose entity has been deleted
+//   (c) falsy (null, undefined, '') — caller bug
+// `operation` is a short label ("view", "delete note", "toggle post-bind")
+// used to make the notice helpful.
+function handleMissingLocalInsured(insId, operation) {
+  operation = operation || 'that action';
+  var asNum = Number(insId);
+  var isValidPgId = insId != null && insId !== '' &&
+                    Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0;
+
+  if (isValidPgId) {
+    // View operations translate cleanly to the backend risk card.
+    // Mutating operations (delete, toggle) don't — warn the user.
+    var isViewOnly = operation === 'view' || operation === 'open';
+    if (isViewOnly) {
+      openBackendRiskCard(asNum);
+    } else {
+      if (typeof showNotice === 'function') {
+        showNotice(
+          '"' + operation + '" isn\'t available for backend-only risks yet. Opening the view card instead.',
+          'warn'
+        );
+      }
+      openBackendRiskCard(asNum);
+    }
+    return;
+  }
+
+  // Not a valid PG ID — entity is genuinely missing.
+  if (typeof showNotice === 'function') {
+    var msg = insId == null || insId === ''
+      ? 'Cannot ' + operation + ' — no account selected'
+      : 'Cannot ' + operation + ' — account not found (may have been deleted)';
+    showNotice(msg, 'warn');
+  }
+  console.warn('[handleMissingLocalInsured] id=' + JSON.stringify(insId) + ' operation=' + operation);
+}
+
 function openBackendRiskCard(riskId){
+  // Guard: backend routes are <int:risk_id>. Non-integer IDs produce 404s
+  // without CORS headers, which surface as confusing CORS errors in the browser.
+  var asNum = Number(riskId);
+  var isValidInt = riskId != null && riskId !== '' &&
+                   Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0;
+  if (!isValidInt) {
+    if (typeof showNotice === 'function') {
+      showNotice(
+        riskId == null || riskId === '' || riskId === 'null' || riskId === 'undefined'
+          ? 'This item isn\'t linked to a risk yet'
+          : 'Cannot open — invalid risk ID: ' + String(riskId),
+        'warn'
+      );
+    }
+    return;
+  }
+  riskId = asNum;
   return (async function(){
     try{
       var risk = await apiFetch('/risks/' + riskId);
@@ -3910,7 +3969,7 @@ function renderEntities(){
 function entOpenCard(insId){
   const ent=entGetState();
   const ins=ent.insureds.find(i=>i.id===insId);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'view'); return; }
   const prod=ent.producers.find(p=>p.id===ins.producerId);
 
   const statusBadge=entStatusBadge;
@@ -4308,7 +4367,7 @@ function entCloseCard(){
 function entTogglePostBind(insId,enqId,field){
   const ent=entGetState();
   const ins=ent.insureds.find(i=>i.id===insId);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'toggle post-bind field'); return; }
   const enq=ins.enquiries.find(e=>e.id===enqId);
   if(!enq||!enq.postBind) return;
   enq.postBind[field]=enq.postBind[field]?'':'DONE';
@@ -4484,7 +4543,7 @@ function hiPopulateEnquiry(insId){
   var sel = document.getElementById('hi-enquiry-select');
   if(!sel) return;
   sel.innerHTML = '<option value="">— select —</option>';
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'list enquiries'); return; }
   [...ins.enquiries].reverse().forEach(function(e){
     var o = document.createElement('option');
     o.value = e.id;
@@ -4697,7 +4756,7 @@ function populateEnquirySelect(insId){
   const ins=ent.insureds.find(i=>i.id===insId);
   const sel=document.getElementById('en-enquiry-select');
   sel.innerHTML='<option value="">— select enquiry —</option>';
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'list enquiries'); return; }
   [...ins.enquiries].reverse().forEach(e=>{
     const o=document.createElement('option');
     o.value=e.id;
@@ -5620,7 +5679,7 @@ function getPostBindList(){
 function toggleChecklistItem(insId, enqId, item){
   const ent = entGetState();
   const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'toggle checklist item'); return; }
   const enq = (ins.enquiries||[]).find(e=>e.id===enqId);
   if(!enq) return;
   if(!enq.checklist) enq.checklist = {};
@@ -6466,7 +6525,7 @@ function useSlipAsPrecedent(id){
 function deleteInsured(insId){
   const ent = entGetState();
   const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'delete account'); return; }
   if(!confirm(`Delete ${ins.name} and all associated notes and documents? This cannot be undone.`)) return;
   ent.insureds = ent.insureds.filter(i=>i.id!==insId);
   entSave(ent);
@@ -6478,7 +6537,7 @@ function deleteInsured(insId){
 function deleteNote(insId, noteId){
   const ent = entGetState();
   const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'delete note'); return; }
   if(!confirm('Delete this note? This cannot be undone.')) return;
   ins.notes = (ins.notes||[]).filter(n=>n.id!==noteId);
   entSave(ent);
@@ -6495,7 +6554,7 @@ async function researchCompany(insId){
 
   const ent = entGetState();
   const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'research company'); return; }
 
   const btn = document.getElementById('research-btn-'+insId);
   if(btn){ btn.textContent = '⟳ Researching...'; btn.disabled = true; }
@@ -6718,7 +6777,7 @@ function isDuplicateNote(ins, note){
 
 function batchAutoSave(note, match, ent){
   const ins = ent.insureds.find(i=>i.id===match.matched_id);
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(match.matched_id, 'batch auto-save'); return; }
   if(!ins.notes) ins.notes=[];
   // Skip if duplicate
   if(isDuplicateNote(ins, note)){
@@ -8215,6 +8274,8 @@ KEY INSIGHT FOR MARINE CARGO UNDERWRITERS: The lenders' insurance schedule is th
   slips.push(slip);
   saveSlips(slips);
 }
+// FX cache key — storage location for cached exchange rates
+var FX_CACHE_KEY = 'og_fx_rates_v1';
 function getFxCache(){ try{ return JSON.parse(localStorage.getItem(FX_CACHE_KEY)||'null'); }catch{ return null; } }
 function saveFxCache(rates,base){ localStorage.setItem(FX_CACHE_KEY,JSON.stringify({rates,base,ts:Date.now()})); }
 async function fetchFxRates(base){
@@ -8222,6 +8283,27 @@ async function fetchFxRates(base){
   if(!resp.ok) throw new Error('HTTP '+resp.status);
   const data = await resp.json();
   return data.rates;
+}
+// ensureFxRates — fetches fresh rates if cache is stale or missing, returns cache on network failure.
+// Returns { rates, base, ts } or null if nothing available at all.
+async function ensureFxRates(base){
+  base = (base || 'GBP').toUpperCase();
+  var CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24 hours
+  var cached = getFxCache();
+  if (cached && cached.base === base && cached.ts && (Date.now() - cached.ts) < CACHE_TTL_MS) {
+    return cached;
+  }
+  try {
+    var rates = await fetchFxRates(base);
+    if (rates) {
+      saveFxCache(rates, base);
+      return { rates: rates, base: base, ts: Date.now() };
+    }
+  } catch(e) {
+    console.warn('[ensureFxRates] live fetch failed:', e.message);
+  }
+  if (cached && cached.rates) return cached;
+  return null;
 }
 
 

@@ -9,7 +9,7 @@ async function verifyLegalName(insId) {
 
   var ent = entGetState();
   var ins = (ent.insureds||[]).find(function(i){ return i.id===insId; });
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'verify legal name'); return; }
 
   var btn = document.getElementById('verify-name-btn-'+insId);
   var panel = document.getElementById('name-verify-panel-'+insId);
@@ -153,7 +153,7 @@ function applyNameCorrection(insId, newName) {
 
   var ent = entGetState();
   var ins = (ent.insureds||[]).find(function(i){ return i.id===insId; });
-  if(!ins) { openBackendRiskCard(insId); return; }
+  if(!ins) { handleMissingLocalInsured(insId, 'apply name correction'); return; }
 
   var oldName = ins.name;
 
