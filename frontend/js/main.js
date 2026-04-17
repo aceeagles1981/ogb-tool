@@ -2030,6 +2030,7 @@ async function fetchTaskList(params){
 }
 
 function riskToWipRow(r){
+  var ai = r.ai_extracted || {};
   return {
     id: r.id,
     insured: r.display_name || r.assured_name,
@@ -2045,6 +2046,9 @@ function riskToWipRow(r){
     status: canonicalRiskStatus(r.status),
     statusLabel: r.status_label || riskStatusLabel(r.status),
     product: r.product || '—',
+    newRenewal: ai.newRenewal || ai.new_renewal || '',
+    quoteLeader: ai.quoteLeader || ai.quote_leader || '',
+    notes: (r.notes || '').replace(/\s+/g, ' ').slice(0, 120),
     review: !!r.needs_review,
     reviewReason: r.review_reason || '',
     raw: r
@@ -2801,30 +2805,72 @@ function renderPipeline(){
       if(pipeCountEl) pipeCountEl.textContent = rows.length + ' risks · ' + tasks.length + ' open tasks';
 
       const fmtEst = v => v!=null ? Number(v).toLocaleString() : '—';
+      const truncNote = n => n && n.length > 60 ? n.slice(0,57)+'…' : (n||'—');
+      const nrBadge = nr => nr ? `<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;background:${nr==='Renewal'?'var(--warn-bg)':'var(--ok-bg)'};color:${nr==='Renewal'?'var(--warn)':'var(--ok)'}">${nr==='Renewal'?'R':'N'}</span>` : '<span class="muted">—</span>';
       const tbodyHtml = rows.length ? `
-        <div style="overflow-x:auto"><table style="min-width:1080px;font-size:11px">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <button class="btn sm" onclick="exportPipelineXlsx()" title="Export pipeline to Excel">📊 Export Excel</button>
+        </div>
+        <div style="overflow-x:auto"><table style="min-width:1280px;font-size:11px">
           <tr>
-            <th>Handler</th><th style="min-width:180px">Insured</th><th>Producer</th><th>Inception</th><th>Expiry</th><th>CCY</th><th style="text-align:right">Premium</th><th style="text-align:right">GBP comm</th><th style="text-align:center">Open tasks</th><th>Region</th><th>Status</th><th>Product</th><th></th>
+            <th>Handler</th><th style="min-width:180px">Insured</th><th>Producer</th><th>Received</th><th>Inception</th><th>Expiry</th><th style="text-align:center">N/R</th><th>CCY</th><th style="text-align:right">Premium</th><th style="text-align:right">GBP comm</th><th>Region</th><th>Status</th><th>Product</th><th>Quote Leader</th><th style="text-align:center">Tasks</th><th style="min-width:140px">Notes</th><th></th>
           </tr>
           ${rows.map(r=>`<tr>
             <td style="font-weight:600;color:var(--acc)">${r.handler||'—'}</td>
             <td style="font-weight:500">${r.insured}</td>
             <td class="muted">${r.producer||'—'}</td>
-            <td>${r.inceptionDate||'—'}</td>
-            <td>${r.expiryDate||'—'}</td>
+            <td style="white-space:nowrap">${r.enquiryDate||'—'}</td>
+            <td style="white-space:nowrap">${r.inceptionDate||'—'}</td>
+            <td style="white-space:nowrap">${r.expiryDate||'—'}</td>
+            <td style="text-align:center">${nrBadge(r.newRenewal)}</td>
             <td>${r.ccy||'—'}</td>
             <td style="text-align:right">${fmtEst(r.premium)}</td>
             <td style="text-align:right">${fmtEst(r.comm)}</td>
-            <td style="text-align:center">${r.raw && r.raw.open_task_count!=null ? r.raw.open_task_count : 0}</td>
             <td>${r.region||'—'}</td>
             <td>${riskStatusBadgeHtml(r.status)}</td>
             <td>${r.product||'—'}</td>
+            <td style="font-size:10px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.quoteLeader||'—'}</td>
+            <td style="text-align:center">${r.raw && r.raw.open_task_count!=null ? r.raw.open_task_count : 0}</td>
+            <td style="font-size:10px;color:var(--text2);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(r.notes||'').replace(/"/g,'&quot;')}">${truncNote(r.notes)}</td>
             <td><button class="btn sm" onclick="openBackendRiskCard(${r.id})">View</button></td>
           </tr>`).join('')}
         </table></div>` : `<p class="muted">No backend risks match the current WIP filter.</p>`;
       document.getElementById('pipeline-table').innerHTML = tbodyHtml;
     } catch(e){
       document.getElementById('pipeline-table').innerHTML = `<div class="notice err">WIP load failed: ${e.message}</div>`;
+    }
+  })();
+}
+
+// ── Pipeline Excel Export ─────────────────────────────────────────────────────
+// Generates a .csv (Excel-compatible) from the current pipeline view.
+// Uses CSV rather than .xlsx to avoid a library dependency.
+function exportPipelineXlsx(){
+  (async function(){
+    try {
+      var risks = await fetchRiskList({ limit: 1000, pipeline_only: false });
+      var rows = risks.map(riskToWipRow);
+      var headers = ['Handler','Insured','Producer','Received','Inception','Expiry','N/R','CCY','Premium','GBP Commission','Region','Status','Product','Quote Leader','Notes'];
+      var csvRows = [headers.join(',')];
+      rows.forEach(function(r){
+        var cells = [
+          r.handler, r.insured, r.producer, r.enquiryDate, r.inceptionDate, r.expiryDate,
+          r.newRenewal || '', r.ccy, r.premium != null ? r.premium : '',
+          r.comm != null ? r.comm : '', r.region, r.statusLabel || r.status,
+          r.product, r.quoteLeader || '', (r.notes || '').replace(/"/g, '""')
+        ];
+        csvRows.push(cells.map(function(c){ return '"' + String(c==null?'':c).replace(/"/g,'""') + '"'; }).join(','));
+      });
+      var blob = new Blob([csvRows.join('\n')], {type:'text/csv;charset=utf-8;'});
+      var a = document.createElement('a');
+      var date = new Date().toISOString().slice(0,10);
+      a.href = URL.createObjectURL(blob);
+      a.download = 'OGB-Pipeline-' + date + '.csv';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      showNotice('Pipeline exported: OGB-Pipeline-' + date + '.csv', 'ok');
+    } catch(e){
+      showNotice('Export failed: ' + e.message, 'err');
     }
   })();
 }
@@ -3882,7 +3928,8 @@ function renderEntities(){
   (async function(){
     try {
       const q = (document.getElementById('ent-search')||{value:''}).value.toLowerCase().trim();
-      const sf = canonicalRiskStatus((document.getElementById('ent-status')||{value:''}).value);
+      const sfRaw = (document.getElementById('ent-status')||{value:''}).value;
+      const sf = sfRaw ? canonicalRiskStatus(sfRaw) : '';
       const pf = (document.getElementById('ent-prod-filter')||{value:''}).value;
       const risks = await fetchRiskList({ limit: 1000 });
 

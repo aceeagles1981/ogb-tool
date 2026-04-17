@@ -736,7 +736,13 @@ async function wfSaveAll() {
     accounting_year: new Date().getFullYear(),
     notes: risk.notes || '',
     needs_review: true,
-    review_reason: 'Created from workflow ingest'
+    review_reason: 'Created from workflow ingest',
+    ai_extracted: {
+      newRenewal: risk.new_renewal || risk.newRenewal || '',
+      quoteLeader: risk.quote_leader || risk.quoteLeader || '',
+      cedant: risk.cedant || '',
+      source_workflow: true
+    }
   };
 
   try {
