@@ -124,7 +124,7 @@ function renderWorkflowResult(container, result) {
   container.innerHTML = `
     <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:16px">
       <!-- Header -->
-      <div style="background:var(--accent);color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
+      <div style="background:#003366;color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
         <div>
           <div style="font-size:13px;font-weight:700">Workflow Complete</div>
           <div style="font-size:11px;opacity:0.85;margin-top:2px">
@@ -152,11 +152,13 @@ function renderWorkflowResult(container, result) {
       </div>
 
       <!-- Actions -->
-      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:var(--bg)">
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:var(--bg);flex-wrap:wrap">
+        <button onclick="wfApplyToProposal()" style="padding:6px 14px;font-size:11px;border:1px solid var(--border);
+          border-radius:6px;background:var(--card);cursor:pointer;color:var(--text)">Apply to Proposal Form →</button>
         <button onclick="wfCopyMarketEmail()" style="padding:6px 14px;font-size:11px;border:1px solid var(--border);
           border-radius:6px;background:var(--card);cursor:pointer;color:var(--text)">Copy Market Email</button>
-        <button onclick="wfSaveAll()" style="padding:6px 14px;font-size:11px;border:none;
-          border-radius:6px;background:var(--accent);color:#fff;cursor:pointer;font-weight:600">Save Risk + Tasks →</button>
+        <button onclick="wfSaveAll()" id="wf-save-btn" style="padding:6px 14px;font-size:11px;border:none;
+          border-radius:6px;background:#003366;color:#fff;cursor:pointer;font-weight:600">Save Risk + Tasks →</button>
       </div>
     </div>
   `;
@@ -592,45 +594,51 @@ Kind regards`;
 async function wfSaveAll() {
   if (!_workflowResult?.workflow_outputs) return;
 
+  const btn = document.getElementById('wf-save-btn');
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+
   const outputs = _workflowResult.workflow_outputs;
   const risk = outputs.risk_draft || {};
 
   // Build risk payload for backend
   const payload = {
-    assured_name: risk.assured_name,
-    product: risk.product,
-    status: risk.status || 'Submission',
-    region: risk.region,
-    handler: risk.handler,
-    currency: risk.currency,
-    estimated_premium: risk.estimated_premium,
-    notes: risk.notes,
-    source: 'workflow'
+    assured_name: risk.assured_name || 'Unknown',
+    product: risk.product || '',
+    status: risk.status || 'submission',
+    region: risk.region || '',
+    handler: risk.handler || '',
+    currency: risk.currency || 'USD',
+    gross_premium: risk.estimated_premium || null,
+    accounting_year: new Date().getFullYear(),
+    notes: risk.notes || '',
+    needs_review: true,
+    review_reason: 'Created from workflow ingest'
   };
 
   try {
-    // Create risk
-    const resp = await apiFetch('/risks', {
+    // Create risk — apiFetch returns parsed data directly via resp
+    const resp = await fetch(BACKEND + '/risks', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()),
       body: JSON.stringify(payload)
     });
     const riskData = await resp.json();
+    if (!resp.ok) throw new Error(riskData.error || 'Failed to create risk');
     const riskId = riskData.id;
 
     // Create tasks
     if (outputs.tasks?.length && riskId) {
       for (const t of outputs.tasks) {
-        await apiFetch('/tasks', {
+        await fetch(BACKEND + '/tasks', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()),
           body: JSON.stringify({
             risk_id: riskId,
             title: t.title,
             description: t.description,
-            priority: t.priority,
-            assigned_to: t.owner,
-            category: t.category
+            priority: t.priority || 'normal',
+            owner: t.owner || '',
+            source: 'workflow'
           })
         });
       }
@@ -638,12 +646,9 @@ async function wfSaveAll() {
 
     // Store document extractions against the new risk
     if (_workflowResult.attachment_extractions?.length && riskId) {
-      // Re-run storage with the risk_id now known
-      // (attachment raw data is no longer available — extractions were already processed)
-      // The extractions are already in _workflowResult but we need the backend to store them
-      await apiFetch(`/risks/${riskId}/store-extractions`, {
+      await fetch(BACKEND + '/risks/' + riskId + '/store-extractions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()),
         body: JSON.stringify({
           extractions: _workflowResult.attachment_extractions
         })
@@ -651,15 +656,101 @@ async function wfSaveAll() {
     }
 
     if (typeof showNotice === 'function') {
-      showNotice(`Risk "${risk.assured_name}" saved with ${(outputs.tasks||[]).length} tasks`, 'ok');
+      showNotice('Risk "' + (risk.assured_name||'') + '" saved with ' + (outputs.tasks||[]).length + ' tasks', 'ok');
     }
 
-    // Navigate to the risk
-    if (typeof tab === 'function') tab('pipeline');
+    // Update button to show success
+    if (btn) { btn.textContent = '✓ Saved'; btn.style.background = '#059669'; }
+    setTimeout(function() {
+      if (btn) { btn.textContent = 'Save Risk + Tasks →'; btn.style.background = '#003366'; btn.disabled = false; }
+    }, 3000);
 
   } catch (err) {
     if (typeof showNotice === 'function') {
-      showNotice(`Save failed: ${err.message}`, 'err');
+      showNotice('Save failed: ' + err.message, 'err');
     }
+    if (btn) { btn.textContent = 'Save Risk + Tasks →'; btn.disabled = false; }
   }
+}
+
+
+// ── Apply workflow data to the Proposal Form panel ──────────────────────────
+
+function wfApplyToProposal() {
+  if (!_workflowResult?.workflow_outputs?.proposal_form) {
+    if (typeof showNotice === 'function') showNotice('No proposal data to apply', 'warn');
+    return;
+  }
+
+  var pf = _workflowResult.workflow_outputs.proposal_form;
+
+  // Insured info
+  var nameEl = document.getElementById('pi-name');
+  if (nameEl && pf.insured_name) nameEl.value = pf.insured_name;
+
+  var countryEl = document.getElementById('pi-country');
+  if (countryEl && pf.locations && pf.locations.length) {
+    var countries = pf.locations.map(function(l){ return l.country; }).filter(Boolean);
+    countryEl.value = countries.length ? countries.join(', ') : '';
+  }
+
+  var bizEl = document.getElementById('pi-biz');
+  if (bizEl && pf.business_description) {
+    // Try to match to dropdown options
+    var desc = pf.business_description.toLowerCase();
+    if (desc.indexOf('import') >= 0) bizEl.value = 'Importer';
+    else if (desc.indexOf('export') >= 0) bizEl.value = 'Exporter';
+    else if (desc.indexOf('manufactur') >= 0) bizEl.value = 'Manufacturer';
+    else if (desc.indexOf('trad') >= 0 || desc.indexOf('distribut') >= 0) bizEl.value = 'Trader / Distributor';
+    else if (desc.indexOf('freight') >= 0 || desc.indexOf('logistics') >= 0) bizEl.value = 'Freight Forwarder / Logistics';
+  }
+
+  var turnEl = document.getElementById('pi-turn');
+  if (turnEl && pf.annual_turnover && pf.annual_turnover.amount) turnEl.value = pf.annual_turnover.amount;
+
+  // Goods
+  var goodsEl = document.getElementById('pg-desc');
+  if (goodsEl && pf.goods_description) goodsEl.value = pf.goods_description;
+
+  var maxShipEl = document.getElementById('pg-maxship');
+  if (maxShipEl && pf.limits_requested && pf.limits_requested.conveyance) maxShipEl.value = pf.limits_requested.conveyance;
+
+  var maxLocEl = document.getElementById('pg-maxloc');
+  if (maxLocEl && pf.limits_requested && pf.limits_requested.location) maxLocEl.value = pf.limits_requested.location;
+
+  // Trade routes
+  if (pf.transits && pf.transits.length) {
+    var fromCountries = pf.transits.map(function(t){ return t.from; }).filter(Boolean);
+    var toCountries = pf.transits.map(function(t){ return t.to; }).filter(Boolean);
+    var fromEl = document.getElementById('pg-from');
+    var toEl = document.getElementById('pg-to');
+    if (fromEl) fromEl.value = [...new Set(fromCountries)].join(', ');
+    if (toEl) toEl.value = [...new Set(toCountries)].join(', ');
+  }
+
+  // Stock values
+  if (pf.locations && pf.locations.length) {
+    var maxVal = Math.max.apply(null, pf.locations.map(function(l){ return l.max_values || 0; }));
+    var avgVals = pf.locations.map(function(l){ return l.average_values || l.max_values || 0; });
+    var avgTotal = avgVals.reduce(function(a,b){ return a+b; }, 0);
+
+    var peakEl = document.getElementById('ps-peak');
+    if (peakEl && maxVal) peakEl.value = maxVal;
+    var avgEl = document.getElementById('ps-avg');
+    if (avgEl && avgTotal) avgEl.value = Math.round(avgTotal / avgVals.length);
+  }
+
+  // Deductibles
+  if (pf.deductible_requested) {
+    var dedT = document.getElementById('stp-ded-t') || document.getElementById('pharma-ded-transit');
+    var dedS = document.getElementById('stp-ded-s') || document.getElementById('pharma-ded-stock');
+    if (dedT && pf.deductible_requested.transit) dedT.value = pf.deductible_requested.currency + ' ' + Number(pf.deductible_requested.transit).toLocaleString();
+    if (dedS && pf.deductible_requested.stock) dedS.value = pf.deductible_requested.currency + ' ' + Number(pf.deductible_requested.stock).toLocaleString();
+  }
+
+  // Navigate to proposal form
+  if (typeof tab === 'function') tab('proposal');
+  if (typeof calcPremium === 'function') calcPremium();
+
+  if (typeof showNotice === 'function') showNotice('Proposal form populated from workflow data', 'ok');
 }
