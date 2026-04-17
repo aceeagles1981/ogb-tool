@@ -1,3 +1,4 @@
+
 import json
 import logging
 import os
@@ -2235,6 +2236,74 @@ def import_entities():
         log_event(conn, "entity", 0, "bulk_import", results, user_id)
 
     return jsonify({"ok": True, **results})
+
+
+# -----------------------------------------------------------------------------
+# Cleanup endpoint — delete junk/test risks
+# -----------------------------------------------------------------------------
+
+@app.post("/risks/cleanup")
+@require_admin
+@rate_limited("default_write")
+def cleanup_risks():
+    """Delete risks matching criteria. Intended for removing batch ingest test data.
+
+    Payload:
+    {
+        "assured_name_like": "CEVA",       // partial match
+        "no_premium": true,                // gross_premium IS NULL
+        "no_inception": true,              // inception_date IS NULL
+        "status": "submission",            // optional status filter
+        "dry_run": true                    // if true, just count without deleting
+    }
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    user_id = get_user_id_from_request()
+    dry_run = bool(payload.get("dry_run", True))
+
+    where, params = ["r.merged_into_risk_id IS NULL"], []
+    if payload.get("assured_name_like"):
+        where.append("LOWER(r.assured_name) LIKE %s")
+        params.append(f"%{payload['assured_name_like'].lower()}%")
+    if payload.get("no_premium"):
+        where.append("r.gross_premium IS NULL")
+    if payload.get("no_inception"):
+        where.append("r.inception_date IS NULL")
+    if payload.get("no_producer"):
+        where.append("(r.producer IS NULL OR r.producer = '')")
+    if payload.get("status"):
+        where.append("r.status = %s")
+        params.append(canonical_risk_status(payload["status"]))
+
+    if len(where) <= 1:
+        return jsonify({"error": "At least one filter required besides merged check"}), 400
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            count_sql = f"SELECT COUNT(*) FROM risks r WHERE {' AND '.join(where)}"
+            cur.execute(count_sql, params)
+            count = cur.fetchone()[0]
+
+            if dry_run:
+                return jsonify({"ok": True, "dry_run": True, "would_delete": count})
+
+            if count == 0:
+                return jsonify({"ok": True, "deleted": 0})
+
+            # Get IDs first for cascade cleanup
+            cur.execute(f"SELECT r.id FROM risks r WHERE {' AND '.join(where)}", params)
+            risk_ids = [row[0] for row in cur.fetchall()]
+
+            # Delete tasks and ledger entries first (CASCADE should handle but be explicit)
+            cur.execute("DELETE FROM risk_tasks WHERE risk_id = ANY(%s)", (risk_ids,))
+            cur.execute("DELETE FROM risk_ledger_entries WHERE risk_id = ANY(%s)", (risk_ids,))
+            cur.execute("DELETE FROM activity_events WHERE entity_type = 'risk' AND entity_id = ANY(%s)", (risk_ids,))
+            cur.execute("DELETE FROM risks WHERE id = ANY(%s)", (risk_ids,))
+            deleted = cur.rowcount
+
+            log_event(conn, "entity", 0, "bulk_cleanup", {"deleted": deleted, "criteria": payload}, user_id)
+
+    return jsonify({"ok": True, "deleted": deleted, "risk_ids": risk_ids})
 
 
 if __name__ == "__main__":
