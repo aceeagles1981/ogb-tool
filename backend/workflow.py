@@ -30,7 +30,9 @@ You must return ONLY valid JSON with these sections:
     "summary": "One sentence describing what this email is about"
   },
   "risk_draft": {
-    "assured_name": "...",
+    "assured_name": "legal name of the insured",
+    "display_name": "short display name for the insured",
+    "producer": "name of the overseas broker / producing broker who sent this submission",
     "product": "MC | STP | WHLL | FFL | PC",
     "status": "Submission | AW Submission | In market | Quoted | Bound",
     "region": "...",
