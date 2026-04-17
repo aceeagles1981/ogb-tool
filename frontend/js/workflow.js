@@ -325,8 +325,9 @@ function wfRenderTerms(extractions) {
           ${wfTermRow('Brokerage', t.brokerage ? t.brokerage + '%' : null)}
           ${wfTermRow('Loss History', t.loss_history)}
           ${wfTermRow('Payment Terms', t.payment_terms)}
-          ${wfTermRow('Exclusions', t.exclusions?.length ? t.exclusions.join('; ') : null)}
-          ${wfTermRow('Conditions', t.conditions?.length ? t.conditions.join('; ') : null)}
+          ${wfTermList('Exclusions', t.exclusions)}
+          ${wfTermList('Conditions', t.conditions)}
+          ${wfTermList('Warranties', t.warranties)}
           ${wfTermRow('Policy Ref', t.policy_ref)}
         </div>
         ${t.locations?.length ? `
@@ -441,6 +442,16 @@ function wfTermRow(label, value) {
   return `
     <div style="color:var(--text2);font-weight:500">${label}</div>
     <div style="color:var(--text)">${value}</div>
+  `;
+}
+
+function wfTermList(label, items) {
+  if (!items || !items.length) return '';
+  return `
+    <div style="color:var(--text2);font-weight:500;padding-top:6px">${label}</div>
+    <div style="color:var(--text);padding-top:2px">
+      ${items.map(function(item) { return '<div style="margin-bottom:3px;padding-left:10px;text-indent:-10px">• ' + item + '</div>'; }).join('')}
+    </div>
   `;
 }
 
@@ -793,22 +804,33 @@ function wfApplyToProposal() {
   }
 
   var pf = _workflowResult.workflow_outputs.proposal_form;
+  var terms = null;
 
-  // Insured info
+  // Find the best terms extraction
+  if (_workflowResult.attachment_extractions) {
+    var termsAtt = _workflowResult.attachment_extractions.find(function(a) { return a.terms; });
+    if (termsAtt) terms = termsAtt.terms;
+  }
+
+  // Save proposal draft to localStorage for persistence across tab switches
+  var draft = { proposal: pf, terms: terms, savedAt: new Date().toISOString(), source: 'workflow' };
+  try { localStorage.setItem('og_proposal_draft', JSON.stringify(draft)); } catch(e) {}
+
+  // Populate proposal form fields
   var nameEl = document.getElementById('pi-name');
   if (nameEl && pf.insured_name) nameEl.value = pf.insured_name;
 
   var countryEl = document.getElementById('pi-country');
   if (countryEl && pf.locations && pf.locations.length) {
     var countries = pf.locations.map(function(l){ return l.country; }).filter(Boolean);
-    countryEl.value = countries.length ? countries.join(', ') : '';
+    countryEl.value = countries.length ? [...new Set(countries)].join(', ') : '';
   }
 
   var bizEl = document.getElementById('pi-biz');
   if (bizEl && pf.business_description) {
-    // Try to match to dropdown options
     var desc = pf.business_description.toLowerCase();
-    if (desc.indexOf('import') >= 0) bizEl.value = 'Importer';
+    if (desc.indexOf('import') >= 0 && desc.indexOf('export') >= 0) bizEl.value = 'Trader / Distributor';
+    else if (desc.indexOf('import') >= 0) bizEl.value = 'Importer';
     else if (desc.indexOf('export') >= 0) bizEl.value = 'Exporter';
     else if (desc.indexOf('manufactur') >= 0) bizEl.value = 'Manufacturer';
     else if (desc.indexOf('trad') >= 0 || desc.indexOf('distribut') >= 0) bizEl.value = 'Trader / Distributor';
@@ -818,7 +840,6 @@ function wfApplyToProposal() {
   var turnEl = document.getElementById('pi-turn');
   if (turnEl && pf.annual_turnover && pf.annual_turnover.amount) turnEl.value = pf.annual_turnover.amount;
 
-  // Goods
   var goodsEl = document.getElementById('pg-desc');
   if (goodsEl && pf.goods_description) goodsEl.value = pf.goods_description;
 
@@ -828,7 +849,6 @@ function wfApplyToProposal() {
   var maxLocEl = document.getElementById('pg-maxloc');
   if (maxLocEl && pf.limits_requested && pf.limits_requested.location) maxLocEl.value = pf.limits_requested.location;
 
-  // Trade routes
   if (pf.transits && pf.transits.length) {
     var fromCountries = pf.transits.map(function(t){ return t.from; }).filter(Boolean);
     var toCountries = pf.transits.map(function(t){ return t.to; }).filter(Boolean);
@@ -838,29 +858,47 @@ function wfApplyToProposal() {
     if (toEl) toEl.value = [...new Set(toCountries)].join(', ');
   }
 
-  // Stock values
   if (pf.locations && pf.locations.length) {
     var maxVal = Math.max.apply(null, pf.locations.map(function(l){ return l.max_values || 0; }));
-    var avgVals = pf.locations.map(function(l){ return l.average_values || l.max_values || 0; });
-    var avgTotal = avgVals.reduce(function(a,b){ return a+b; }, 0);
-
+    var avgVals = pf.locations.map(function(l){ return l.average_values || l.max_values || 0; }).filter(function(v){ return v > 0; });
     var peakEl = document.getElementById('ps-peak');
     if (peakEl && maxVal) peakEl.value = maxVal;
     var avgEl = document.getElementById('ps-avg');
-    if (avgEl && avgTotal) avgEl.value = Math.round(avgTotal / avgVals.length);
+    if (avgEl && avgVals.length) avgEl.value = Math.round(avgVals.reduce(function(a,b){return a+b;},0) / avgVals.length);
   }
 
-  // Deductibles
   if (pf.deductible_requested) {
-    var dedT = document.getElementById('stp-ded-t') || document.getElementById('pharma-ded-transit');
-    var dedS = document.getElementById('stp-ded-s') || document.getElementById('pharma-ded-stock');
-    if (dedT && pf.deductible_requested.transit) dedT.value = pf.deductible_requested.currency + ' ' + Number(pf.deductible_requested.transit).toLocaleString();
-    if (dedS && pf.deductible_requested.stock) dedS.value = pf.deductible_requested.currency + ' ' + Number(pf.deductible_requested.stock).toLocaleString();
+    var dedT = document.getElementById('stp-ded-t');
+    var dedS = document.getElementById('stp-ded-s');
+    if (dedT && (pf.deductible_requested.transit || pf.deductible_requested.amount)) {
+      dedT.value = (pf.deductible_requested.currency || 'USD') + ' ' + Number(pf.deductible_requested.transit || pf.deductible_requested.amount || 0).toLocaleString();
+    }
+    if (dedS && pf.deductible_requested.stock) {
+      dedS.value = (pf.deductible_requested.currency || 'USD') + ' ' + Number(pf.deductible_requested.stock).toLocaleString();
+    }
   }
 
-  // Navigate to proposal form
-  if (typeof tab === 'function') tab('proposal');
-  if (typeof calcPremium === 'function') calcPremium();
+  // Also populate STP MRC generator fields
+  var stpInsEl = document.getElementById('stp-insured');
+  if (stpInsEl && pf.insured_name) stpInsEl.value = pf.insured_name;
+  var stpGoodsEl = document.getElementById('stp-goods');
+  if (stpGoodsEl && pf.goods_description) stpGoodsEl.value = pf.goods_description;
+  var stpTurnEl = document.getElementById('stp-turnover');
+  if (stpTurnEl && pf.annual_turnover && pf.annual_turnover.amount) {
+    stpTurnEl.value = (pf.annual_turnover.currency || 'USD') + ' ' + Number(pf.annual_turnover.amount).toLocaleString();
+  }
+  var stpLocEl = document.getElementById('stp-loc-limit');
+  if (stpLocEl && pf.limits_requested && pf.limits_requested.location) {
+    stpLocEl.value = (pf.limits_requested.currency || 'USD') + ' ' + Number(pf.limits_requested.location).toLocaleString();
+  }
+  var stpConvEl = document.getElementById('stp-conv-limit');
+  if (stpConvEl && pf.limits_requested && pf.limits_requested.conveyance) {
+    stpConvEl.value = (pf.limits_requested.currency || 'USD') + ' ' + Number(pf.limits_requested.conveyance).toLocaleString();
+  }
 
-  if (typeof showNotice === 'function') showNotice('Proposal form populated from workflow data', 'ok');
+  if (typeof calcPremium === 'function') { try { calcPremium(); } catch(e) {} }
+
+  if (typeof showNotice === 'function') {
+    showNotice('Proposal form populated and saved — navigate to Proposal tab when ready', 'ok');
+  }
 }
