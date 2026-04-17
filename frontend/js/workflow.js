@@ -725,6 +725,8 @@ async function wfSaveAll() {
   // Build risk payload for backend
   const payload = {
     assured_name: risk.assured_name || 'Unknown',
+    display_name: risk.display_name || risk.assured_name || 'Unknown',
+    producer: risk.producer || '',
     product: risk.product || '',
     status: risk.status || 'submission',
     region: risk.region || '',
