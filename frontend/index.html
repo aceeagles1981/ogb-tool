@@ -2271,7 +2271,7 @@
       <div style="display:flex;gap:8px"><button class="btn primary" onclick="importData()">Import</button><button class="btn" onclick="document.getElementById('import-json').value=''">Clear</button></div>
       <div id="import-notice" style="display:none;margin-top:8px;font-size:11px"></div>
     </div>
-    <details style="margin-top:8px"><summary style="font-size:11px;color:var(--text3);cursor:pointer">⚠ Danger zone</summary><div style="margin-top:8px"><button class="btn" onclick="clearAllData()" style="color:var(--err);font-size:11px">⚠ Clear ALL data</button></div></details>
+    <details style="margin-top:8px"><summary style="font-size:11px;color:var(--text3);cursor:pointer">⚠ Danger zone</summary><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="clearAllData()" style="color:var(--err);font-size:11px">⚠ Clear ALL localStorage</button><button class="btn" onclick="cleanupJunkRisks(true)" style="font-size:11px">Preview junk risks</button><button class="btn" onclick="cleanupJunkRisks(false)" style="color:var(--err);font-size:11px">🗑 Delete junk risks</button></div><div id="cleanup-notice" style="display:none;margin-top:8px;font-size:11px"></div></details>
   </div>
 </div>
 <div id="cw-cert-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:400;overflow-y:auto;padding:24px 16px">
