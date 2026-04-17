@@ -212,9 +212,11 @@ def _serialise(obj):
 
 # ── Main workflow endpoint ────────────────────────────────────────────────────
 
-@workflow_bp.route('/ingest-workflow', methods=['POST'])
+@workflow_bp.route('/ingest-workflow', methods=['POST', 'OPTIONS'])
 def ingest_workflow():
     """Full ingest workflow: parse → extract attachments → classify → extract terms → generate outputs."""
+    if request.method == 'OPTIONS':
+        return '', 204
     from app import get_conn, parse_uploaded_email, get_user_id_from_request, \
         get_auth_token_from_request, ADMIN_TOKEN as admin_token, ANTHROPIC_API_KEY as api_key
 
