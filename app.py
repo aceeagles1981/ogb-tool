@@ -374,15 +374,18 @@ CREATE INDEX IF NOT EXISTS idx_entities_parent ON entities(parent_id);
 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(LOWER(name));
 CREATE INDEX IF NOT EXISTS idx_entity_notes_entity ON entity_notes(entity_id);
 CREATE INDEX IF NOT EXISTS idx_entity_notes_risk ON entity_notes(risk_id);
-CREATE INDEX IF NOT EXISTS idx_risks_entity_id ON risks(entity_id);
 """
 
 
 def ensure_schema() -> None:
+    # Step 1: create tables and indexes (idempotent)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
-            # Migrations: add columns to existing tables (idempotent via DO blocks)
+    logger.info("Base schema ensured")
+    # Step 2: migrations — add columns to existing tables (separate transaction)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
             cur.execute("""
                 DO $$
                 BEGIN
@@ -452,7 +455,12 @@ def ensure_schema() -> None:
                     );
                 END $$;
             """)
-    logger.info("Database schema ensured")
+    logger.info("Migrations ensured")
+    # Step 3: indexes on new columns (separate transaction, after columns exist)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_risks_entity_id ON risks(entity_id);")
+    logger.info("Database schema fully ensured")
 
 
 if DATABASE_URL:
