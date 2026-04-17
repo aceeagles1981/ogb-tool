@@ -1274,6 +1274,10 @@
         </select>
       </div>
       <div id="ent-counts" class="muted" style="font-size:11px;padding-bottom:2px"></div>
+      <div style="display:flex;gap:6px">
+        <button class="btn sm primary" onclick="createEntityPrompt('producer')">+ Producer</button>
+        <button class="btn sm" onclick="createEntityPrompt('insured')">+ Insured</button>
+      </div>
     </div>
     <div id="ent-list"></div>
   </div>
@@ -2254,6 +2258,12 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><button class="btn primary" onclick="exportAllData()">📋 Copy all</button><button class="btn" onclick="exportEntitiesOnly()">📋 Entities</button><button class="btn" onclick="exportBookOnly()">📋 Book</button><button class="btn" onclick="downloadDataJson()">⬇ Download</button></div>
       <div id="export-notice" style="display:none;font-size:11px;font-weight:600;margin-top:6px"></div>
       <div id="data-summary" style="font-size:11px;color:var(--text2);margin-top:6px"></div>
+    </div>
+    <div style="background:var(--bg);border-radius:8px;padding:16px;margin-bottom:14px;border:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px">Migrate entities to PostgreSQL</div>
+      <div style="font-size:11px;color:var(--text2);margin-bottom:10px">Copies all localStorage insureds, producers, and notes to the backend database. Existing entities won't be duplicated. Risks will be auto-linked by name match.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" onclick="migrateEntitiesToPG()">🚀 Migrate now</button><button class="btn" onclick="previewMigration()">Preview</button></div>
+      <div id="migrate-notice" style="display:none;margin-top:8px;font-size:11px"></div>
     </div>
     <div style="background:var(--bg);border-radius:8px;padding:16px;border:1px solid var(--border)">
       <div style="font-size:12px;font-weight:600;margin-bottom:8px">Import</div>
