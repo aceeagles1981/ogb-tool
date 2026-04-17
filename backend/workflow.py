@@ -34,44 +34,44 @@ You must return ONLY valid JSON with these sections:
     "product": "MC | STP | WHLL | FFL | PC",
     "status": "Submission | AW Submission | In market | Quoted | Bound",
     "region": "...",
-    "handler": "KE | EW | MM | JK",
+    "handler": "assign based on email TO field — see handler rules below",
     "currency": "USD",
-    "estimated_premium": 0,
-    "notes": "Brief risk summary for the pipeline"
+    "estimated_premium": null,
+    "notes": "Brief risk summary including cedant name, key locations, goods type, and annual turnover if known"
   },
   "proposal_form": {
     "insured_name": "...",
     "business_description": "...",
     "goods_description": "...",
-    "annual_turnover": {"amount": 0, "currency": "USD"},
-    "locations": [{"name": "...", "country": "...", "max_values": 0}],
-    "transits": [{"from": "...", "to": "...", "mode": "sea|road|air|rail", "annual_value": 0}],
-    "incoterms_split": {"FOB": 0, "CIF": 0},
-    "limits_requested": {"conveyance": 0, "location": 0, "currency": "USD"},
-    "deductible_requested": {"amount": 0, "currency": "USD"},
-    "loss_history": "summary if available",
+    "annual_turnover": {"amount": number_or_null, "currency": "USD"},
+    "locations": [{"name": "full address", "country": "...", "max_values": number, "average_values": number_or_null}],
+    "transits": [{"from": "...", "to": "...", "mode": "sea|road|air|rail", "annual_value": number_or_null}],
+    "incoterms_split": {"FOB": 0, "CIF": 0, "stated": false, "note": "inferred/not stated in submission"},
+    "limits_requested": {"conveyance": number, "location": number, "storage": number, "natcat": number, "currency": "USD"},
+    "deductible_requested": {"transit": number, "stock": number, "natcat_note": "...", "currency": "USD"},
+    "loss_history": "Nil claims reported OR detailed summary — NEVER say 'not provided' if the document says no claims",
     "special_conditions": ["any notable requirements"],
-    "missing_information": ["fields we still need from the producer"]
+    "missing_information": ["fields genuinely not found in any attached document — do NOT list items that ARE in the attachments"]
   },
   "market_email": {
-    "subject": "...",
-    "body": "Draft email to send to underwriters with risk summary and the ask.",
-    "suggested_recipients": ["underwriter names based on product/geography"]
+    "subject": "New STP Submission — [Insured Name] — [Territory] — via [Producer]",
+    "body": "Professional market submission email. MUST include: (1) Insured name and business, (2) Cedant/reinsured name, (3) Annual turnover if known, (4) Key locations and values, (5) Limits and deductibles, (6) Coverage basis, (7) Loss record, (8) Survey highlights — name specific locations and findings, (9) Whether this is direct or facultative reinsurance, (10) What we need from them (indication on terms). Sign off as OG Broking.",
+    "suggested_recipients": ["ONLY suggest markets if you have specific knowledge of their appetite. Otherwise return empty array and note 'Check market feedback log for territory/product routing'"]
   },
   "suggested_underwriters": [
     {
-      "market": "underwriter/syndicate name",
-      "rationale": "why they'd be interested",
+      "market": "ONLY if you have genuine knowledge of appetite — otherwise omit entirely",
+      "rationale": "MUST be factual, not invented. If you don't know, don't guess.",
       "expected_role": "lead | follow",
-      "estimated_line": "10-20%"
+      "estimated_line": "percentage range"
     }
   ],
   "tasks": [
     {
       "title": "...",
-      "description": "...",
+      "description": "specific actionable description",
       "priority": "urgent | high | medium | low",
-      "owner": "KE | EW",
+      "owner": "assign based on email TO field — see handler rules",
       "category": "info_chase | review | market_approach | compliance | admin"
     }
   ],
@@ -84,14 +84,21 @@ You must return ONLY valid JSON with these sections:
   ]
 }
 
-CONTEXT:
-- OG Broking specialises in marine cargo, STP, WHLL, FFL, and project cargo
-- Key markets: Aviva (cargo lead), CNA Hardy, Allied World, Talbot, AXIS, Brit, Everest, Fidelis
-- Turkey/RI business through Integra (main producer)
-- Handlers: KE (senior, Turkey/RI), EW (LatAm, Dubai, project cargo), MM (cargo war), JK (US via RT Specialty)
-- Standard brokerage ~25%, OGB retain varies
+CRITICAL RULES:
+1. HANDLER ASSIGNMENT: Check the email TO/recipients field. If addressed to keaglestone@ogbroking.com → handler is KE. If addressed to ewilcox → EW. If addressed to mmoss → MM. The TO field takes priority over territory inference.
+2. PREMIUM: If no premium or rate is stated in the documents, set estimated_premium to null. NEVER invent a premium figure. If a rate and turnover are both available, you may calculate: note it as "calculated from rate x turnover".
+3. MARKET SUGGESTIONS: If you do not have specific factual knowledge of a market's appetite for this exact territory and product combination, return an empty array for suggested_underwriters and note in market_email that the broker should check their market routing. Do NOT invent rationales.
+4. LOSS HISTORY: If any document says "No claims", "Nil", or "sin siniestros", the loss history IS "Nil claims reported". Do not flag this as missing information.
+5. SURVEY SUMMARY: In the risk_draft notes, name specific locations and specific findings from surveys. Not "fire protection concerns at one location" but "Block 24 Zona Libre — no sprinklers, no fire doors, fire protection rated poor".
+6. INFORMATION GAPS: Only flag information as missing if it genuinely cannot be found in ANY of the attached documents. If the annual turnover is in the slip, do not flag it as missing.
+7. INCOTERMS: If not explicitly stated in the submission, note as "not stated — inferred" rather than assuming CIF 100%.
 
-Be specific and actionable. If you don't have enough information, say so in information_gaps.
+CONTEXT:
+- OG Broking specialises in marine cargo, STP, WHLL, FFL, and project cargo at Lloyd's
+- This is a wholesale Lloyd's broker — submissions come from overseas producers/cedants
+- Handlers: KE=Kether Eaglestone (senior, handles Turkey/RI, also overall team lead), EW=Edward Wilcox (LatAm, Dubai, project cargo), MM=Maisie Moss (cargo war), JK=Jonathan Kaye (US via RT Specialty)
+- Standard brokerage ~25%, OGB retain varies by producer relationship
+- Territory routing: Panama → check Fiducia first. Turkey → Integra panel. General cargo → Aviva as typical lead.
 """
 
 
@@ -212,11 +219,9 @@ def _serialise(obj):
 
 # ── Main workflow endpoint ────────────────────────────────────────────────────
 
-@workflow_bp.route('/ingest-workflow', methods=['POST', 'OPTIONS'])
+@workflow_bp.route('/ingest-workflow', methods=['POST'])
 def ingest_workflow():
     """Full ingest workflow: parse → extract attachments → classify → extract terms → generate outputs."""
-    if request.method == 'OPTIONS':
-        return '', 204
     from app import get_conn, parse_uploaded_email, get_user_id_from_request, \
         get_auth_token_from_request, ADMIN_TOKEN as admin_token, ANTHROPIC_API_KEY as api_key
 

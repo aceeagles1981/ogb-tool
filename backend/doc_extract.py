@@ -217,47 +217,137 @@ Respond ONLY with JSON:
 {"doc_type": "...", "doc_stage": "...", "source_party": "...", "confidence": 0.85, "reasoning": "..."}
 """
 
-EXTRACT_TERMS_SYSTEM = """You are a Lloyd's marine cargo insurance terms extractor.
-Extract all structured terms from this document. Return ONLY valid JSON.
-Omit fields you cannot find. Rates as decimals (0.20% = 0.0020). Dates as YYYY-MM-DD.
+EXTRACT_TERMS_SYSTEM = """You are a Lloyd's marine cargo insurance terms extractor. You are expert at reading reinsurance slips, MRCs, and proposal forms — including those formatted as Word tables.
 
+CRITICAL RULES:
+- Extract EVERY number you find. Do not return null or omit a field if the document contains the data.
+- If a field says "to be informed" or is blank, set it to null — do NOT set it to 0 or NaN.
+- Rates must be decimals: 0.20% = 0.0020. Never return a percentage as 0.20 or 20.
+- If no premium or rate is stated in the document, set premium to null. NEVER invent a premium.
+- If the document says "No claims" or "Nil" for loss history, return "loss_history": "Nil claims reported" — this IS data, not missing data.
+- Multiple limits (ocean, ground, air, storage, NatCat) should ALL be captured in the limits object.
+- Multiple deductibles (transit, stock, NatCat) should ALL be captured.
+- Look for data in TABLES — Word documents often have key:value pairs in table cells.
+- The cedant/reinsured is the original insurance company, NOT the insured or the broker.
+
+Return ONLY valid JSON:
 {
-  "insured": "...", "goods": "...",
+  "insured": "full legal name",
+  "goods": "full goods description as stated",
   "product": "Marine Cargo | STP | WHLL | FFL | Project Cargo | Other",
-  "limits": {"any_one_conveyance": N, "any_one_location": N, "aggregate": N, "currency": "USD"},
-  "deductible": {"amount": N, "currency": "USD", "basis": "each and every loss"},
-  "rate": {"transit": N, "stock": N, "flat": N},
-  "premium": {"amount": N, "currency": "USD", "basis": "minimum_and_deposit | adjustable | flat"},
-  "locations": [{"name": "...", "country": "...", "values": N}],
-  "transits": ["origin → destination"],
-  "incoterms": {"FOB": 70, "CIF": 30},
-  "perils": "ICC(A) | ICC(B) | ICC(C) | All Risks",
-  "war_cover": true, "strikes_cover": true,
-  "exclusions": ["..."], "conditions": ["..."], "warranties": ["..."],
+  "cedant": "original insurer / reinsured company name",
+  "annual_turnover": {"amount": number_or_null, "currency": "USD"},
+  "limits": {
+    "any_one_conveyance": number_or_null,
+    "any_one_location": number_or_null,
+    "any_one_loss": number_or_null,
+    "aggregate": number_or_null,
+    "ocean": number_or_null,
+    "ground": number_or_null,
+    "air": number_or_null,
+    "storage": number_or_null,
+    "natcat": number_or_null,
+    "unnamed_location": number_or_null,
+    "containers_on_deck": number_or_null,
+    "currency": "USD"
+  },
+  "deductible": {
+    "transit": number_or_null,
+    "stock": number_or_null,
+    "natcat": "description e.g. 10% coinsurance",
+    "currency": "USD",
+    "basis": "each and every loss"
+  },
+  "rate": {"transit": decimal_or_null, "stock": decimal_or_null, "flat": decimal_or_null},
+  "premium": {"amount": number_or_null, "currency": "USD", "basis": "minimum_and_deposit | adjustable | flat | null"},
+  "locations": [
+    {"name": "full address", "country": "...", "max_value": number, "average_value": number_or_null}
+  ],
+  "transits": {
+    "imports_from": ["country or region"],
+    "exports_to": ["country: city"],
+    "domestic": "description or null"
+  },
+  "incoterms": {"stated": true_or_false, "terms": {"CIF": percent, "FOB": percent}},
+  "valuation_basis": "description e.g. C&F +10% imports, Book value +10% storage",
+  "perils": "ICC(A) | ICC(B) | ICC(C) | All Risks | Named Perils",
+  "war_cover": true_or_false,
+  "strikes_cover": true_or_false,
+  "exclusions": ["exact exclusion clause names/descriptions"],
+  "conditions": ["exact condition descriptions"],
+  "warranties": ["exact warranty descriptions"],
   "subjectivities": [{"item": "...", "status": "outstanding | received | waived"}],
-  "period": {"inception": "YYYY-MM-DD", "expiry": "YYYY-MM-DD"},
-  "brokerage": 25.0,
-  "placement": {"layers": [{"name": "Primary", "limit": N, "excess": N,
-    "lines": [{"market": "...", "pct": N, "role": "lead | follow"}]}]},
-  "endorsement_ref": "EN1", "endorsement_type": "AP | RP | extension | loss_payee | correction",
-  "endorsement_changes": "...",
-  "loss_payees": ["..."], "policy_ref": "...", "notes": "..."
+  "period": {"inception": "YYYY-MM-DD or null", "expiry": "YYYY-MM-DD or null", "duration_months": number_or_null},
+  "brokerage": number_or_null,
+  "loss_history": "Nil claims reported | description of claims | null if genuinely not provided",
+  "payment_terms": "description of premium payment terms",
+  "law_jurisdiction": "governing law and jurisdiction",
+  "approved_adjusters": ["names"],
+  "placement": {"layers": [{"name": "Primary", "limit": number, "excess": number,
+    "lines": [{"market": "...", "pct": number, "role": "lead | follow"}]}]},
+  "endorsement_ref": "EN1 if applicable",
+  "endorsement_type": "AP | RP | extension | loss_payee | correction",
+  "endorsement_changes": "description",
+  "loss_payees": ["names"],
+  "policy_ref": "UMR or policy reference",
+  "notes": "any other important terms not captured above"
 }
 """
 
-EXTRACT_SURVEY_SYSTEM = """You are a marine cargo insurance survey report analyst.
-Extract structured findings. Return ONLY valid JSON.
+EXTRACT_SURVEY_SYSTEM = """You are a marine cargo insurance survey report analyst. You may receive reports in any language — extract data regardless of language.
+
+Extract ALL specific findings. Do not summarise vaguely — name exact deficiencies and recommendations.
+For fire protection, security, and storage: give the specific equipment present or absent.
+
+Return ONLY valid JSON:
 {
-  "surveyor": "...", "survey_date": "YYYY-MM-DD",
-  "locations_inspected": ["..."],
+  "surveyor": "inspector name and company",
+  "survey_date": "YYYY-MM-DD",
+  "locations_inspected": ["full address of each location"],
   "overall_rating": "satisfactory | needs_improvement | unsatisfactory",
-  "fire_protection": {"rating": "good|adequate|poor", "notes": "..."},
-  "security": {"rating": "good|adequate|poor", "notes": "..."},
-  "storage_conditions": {"rating": "good|adequate|poor", "notes": "..."},
-  "natural_hazard_exposure": {"earthquake": false, "flood": false, "windstorm": false},
-  "recommendations": ["..."], "deficiencies": ["..."],
-  "pml_estimate": {"amount": N, "currency": "USD", "scenario": "..."},
-  "construction_type": "...", "sprinklered": true, "notes": "..."
+  "fire_protection": {
+    "rating": "good | adequate | poor",
+    "sprinklers": true_or_false,
+    "extinguishers": true_or_false,
+    "fire_hose": true_or_false,
+    "fire_doors": true_or_false,
+    "fire_alarm": true_or_false,
+    "emergency_lighting": true_or_false,
+    "notes": "specific details about what is present or missing"
+  },
+  "security": {
+    "rating": "good | adequate | poor",
+    "cctv": true_or_false,
+    "alarm_system": true_or_false,
+    "security_guard": true_or_false,
+    "perimeter_fence": true_or_false,
+    "notes": "specific details"
+  },
+  "storage_conditions": {
+    "rating": "good | adequate | poor",
+    "notes": "specific details about racking, stacking, housekeeping"
+  },
+  "construction": {
+    "walls": "material description",
+    "roof": "material description",
+    "floor": "material description",
+    "doors": "material description",
+    "year_built": number_or_null,
+    "floors": number_or_null,
+    "notes": "any structural concerns"
+  },
+  "natural_hazard_exposure": {
+    "earthquake": true_or_false,
+    "flood": true_or_false,
+    "windstorm": true_or_false,
+    "notes": "drainage issues, proximity to water, seismic zone"
+  },
+  "recommendations": ["each specific recommendation as stated in the report"],
+  "deficiencies": ["each specific deficiency found — be exact, e.g. 'No sprinkler system installed', 'No emergency lighting', 'Fire protection rated malo (bad)'"],
+  "occupancy": "description of building usage and number of employees",
+  "pml_estimate": {"amount": number_or_null, "currency": "USD", "scenario": "description"},
+  "max_values_at_location": number_or_null,
+  "notes": "any other key observations including partial occupancy, shared buildings, uncontrolled adjacent risks"
 }
 """
 
