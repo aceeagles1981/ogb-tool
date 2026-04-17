@@ -30,8 +30,10 @@ def extract_text_from_bytes(file_bytes: bytes, filename: str) -> tuple:
     try:
         if ext == 'pdf':
             text = _extract_pdf(file_bytes)
-        elif ext in ('docx', 'doc'):
+        elif ext == 'docx':
             text = _extract_docx(file_bytes)
+        elif ext == 'doc':
+            text = _extract_doc_legacy(file_bytes)
         elif ext in ('xlsx', 'xls'):
             text = _extract_xlsx(file_bytes)
         elif ext in ('txt', 'csv', 'tsv'):
@@ -91,6 +93,45 @@ def _extract_docx(data: bytes) -> str:
             if any(cells):
                 parts.append(' | '.join(cells))
     return '\n'.join(parts)
+
+
+def _extract_doc_legacy(data: bytes) -> str:
+    """Extract text from old-format .doc files. Try multiple approaches."""
+    import subprocess, tempfile, os
+
+    # Approach 1: Try antiword if available on the system
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.doc') as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(['antiword', tmp_path], capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        finally:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+    except (FileNotFoundError, Exception):
+        pass
+
+    # Approach 2: Try python-docx anyway (sometimes works on newer .doc)
+    try:
+        return _extract_docx(data)
+    except Exception:
+        pass
+
+    # Approach 3: Brute-force text extraction from binary
+    try:
+        text = data.decode('utf-8', errors='replace')
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', ' ', text)
+        cleaned = re.sub(r' {3,}', '\n', cleaned)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        if len(cleaned.strip()) > 100:
+            return cleaned.strip()
+    except Exception:
+        pass
+
+    return f"[Old .doc format — could not extract text. File size: {len(data):,} bytes]"
 
 
 def _extract_xlsx(data: bytes) -> str:
