@@ -4202,87 +4202,82 @@ function entLatestEnquiry(ins){
 function renderEntities(){
   (async function(){
     try {
-      const q = (document.getElementById('ent-search')||{value:''}).value.toLowerCase().trim();
-      const sfRaw = (document.getElementById('ent-status')||{value:''}).value;
-      const sf = sfRaw ? canonicalRiskStatus(sfRaw) : '';
+      const q = (document.getElementById('ent-search')||{value:''}).value.trim();
       const pf = (document.getElementById('ent-prod-filter')||{value:''}).value;
-      const risks = await fetchRiskList({ limit: 1000 });
 
-      const producerMap = {};
-      risks.forEach(function(r){
-        var key = (r.producer || 'Unknown').trim() || 'Unknown';
-        producerMap[key] = true;
-      });
+      // Fetch all entities from PG
+      var allEntities = await fetchEntityList({ limit: 500 });
+
+      // Build producer filter dropdown (once)
+      var producers = allEntities.filter(function(e){ return e.entity_type === 'producer'; });
+      var insureds = allEntities.filter(function(e){ return e.entity_type === 'insured'; });
       const psel = document.getElementById('ent-prod-filter');
-      if(psel && psel.options.length===1){
-        Object.keys(producerMap).sort().forEach(function(name){
-          var o=document.createElement('option'); o.value=name; o.textContent=name; psel.appendChild(o);
+      if(psel && psel.options.length <= 1){
+        producers.sort(function(a,b){ return a.name.localeCompare(b.name); }).forEach(function(p){
+          var o = document.createElement('option'); o.value = String(p.id); o.textContent = p.name; psel.appendChild(o);
         });
       }
 
-      let filtered = risks.filter(function(r){
-        if(pf && (r.producer||'') !== pf) return false;
-        if(sf && canonicalRiskStatus(r.status) !== sf) return false;
+      // Filter
+      var filtered = insureds.filter(function(e){
+        if(pf && String(e.parent_id) !== pf) return false;
         if(q){
-          var hay = [r.assured_name, r.display_name, r.producer, r.region, r.notes, r.product].join(' ').toLowerCase();
-          if(hay.indexOf(q) === -1) return false;
+          var hay = [e.name, e.region, e.handler, e.parent_name].join(' ').toLowerCase();
+          if(hay.indexOf(q.toLowerCase()) === -1) return false;
         }
         return true;
       });
 
-      const latestByAssured = {};
-      filtered.forEach(function(r){
-        var key = (r.assured_name || r.display_name || '').toLowerCase().trim();
-        if(!key) return;
-        if(!latestByAssured[key]) latestByAssured[key] = [];
-        latestByAssured[key].push(r);
+      // Group by producer
+      var grouped = {};
+      filtered.forEach(function(ins){
+        var prodName = ins.parent_name || 'Unassigned';
+        var prodId = ins.parent_id || 0;
+        var key = prodId + '::' + prodName;
+        if(!grouped[key]) grouped[key] = { name: prodName, id: prodId, insureds: [] };
+        grouped[key].insureds.push(ins);
       });
 
-      const grouped = {};
-      Object.values(latestByAssured).forEach(function(arr){
-        arr.sort(function(a,b){
-          return (b.accounting_year||0) - (a.accounting_year||0) || (new Date(b.updated_at||0) - new Date(a.updated_at||0));
+      // Also show producers with no insureds matching the filter
+      if(!q && !pf){
+        producers.forEach(function(p){
+          var key = p.id + '::' + p.name;
+          if(!grouped[key]){
+            grouped[key] = { name: p.name, id: p.id, insureds: [] };
+          }
         });
-        var latest = arr[0];
-        var prod = (latest.producer || 'Unknown').trim() || 'Unknown';
-        if(!grouped[prod]) grouped[prod] = [];
-        grouped[prod].push({ latest: latest, count: arr.length });
+      }
+
+      var totalInsureds = filtered.length;
+      var totalProducers = Object.keys(grouped).length;
+      document.getElementById('ent-counts').textContent = totalInsureds + ' insured' + (totalInsureds!==1?'s':'') + ' · ' + totalProducers + ' producer' + (totalProducers!==1?'s':'');
+
+      var html = '';
+      var sortedGroups = Object.values(grouped).sort(function(a,b){ return a.name.localeCompare(b.name); });
+      sortedGroups.forEach(function(group){
+        var arr = group.insureds.sort(function(a,b){ return a.name.localeCompare(b.name); });
+        html += '<div class="card" style="margin-bottom:10px;padding:12px 16px">' +
+          '<div onclick="' + (group.id ? 'openEntityCard(' + group.id + ')' : '') + '" style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;display:flex;justify-content:space-between;' + (group.id ? 'cursor:pointer' : '') + '">' +
+            '<span>\uD83D\uDCE6 ' + escapeHtml(group.name) + '</span><span class="muted">' + arr.length + ' insured' + (arr.length!==1?'s':'') + '</span>' +
+          '</div>';
+        if(arr.length){
+          html += '<div style="display:flex;flex-direction:column;gap:4px">';
+          arr.forEach(function(ins){
+            html += '<div onclick="openEntityCard(' + ins.id + ')" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background 0.1s" onmouseover="this.style.background=\'var(--bg)\'" onmouseout="this.style.background=\'\'">' +
+              '<div style="flex:1;min-width:0">' +
+                '<div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(ins.name) + '</div>' +
+                '<div style="font-size:11px;color:var(--text2)">' + escapeHtml(ins.region||'—') + ' · Handler: ' + escapeHtml(ins.handler||'—') + ' · ' + ins.risk_count + ' risk' + (ins.risk_count!==1?'s':'') + ' · ' + ins.note_count + ' note' + (ins.note_count!==1?'s':'') + '</div>' +
+              '</div>' +
+            '</div>';
+          });
+          html += '</div>';
+        } else {
+          html += '<div class="muted" style="font-size:11px;padding:4px 10px">No insureds</div>';
+        }
+        html += '</div>';
       });
 
-      const insuredCount = Object.values(latestByAssured).length;
-      document.getElementById('ent-counts').textContent = `${insuredCount} insured${insuredCount!==1?'s':''} · ${Object.keys(grouped).length} producers`;
-
-      let html='';
-      Object.keys(grouped).sort().forEach(function(prod){
-        var arr = grouped[prod].sort(function(a,b){
-          return riskStatusSortRank(b.latest.status)-riskStatusSortRank(a.latest.status) || String(a.latest.assured_name||'').localeCompare(String(b.latest.assured_name||''));
-        });
-        html += `<div class="card" style="margin-bottom:10px;padding:12px 16px">
-          <div style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;display:flex;justify-content:space-between">
-            <span>📦 ${prod}</span><span class="muted">${arr.length} insured${arr.length!==1?'s':''}</span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px">`;
-        arr.forEach(function(obj){
-          var r = obj.latest;
-          var prem = r.gross_premium!=null ? Number(r.gross_premium).toLocaleString() : '—';
-          var commVal = r.locked_gbp_commission != null && r.locked_gbp_commission !== 0 ? r.locked_gbp_commission : r.estimated_gbp_commission;
-          var comm = commVal!=null ? Number(commVal).toLocaleString() : '—';
-          var clickFn = r.entity_id ? 'openEntityCard(' + r.entity_id + ')' : 'openBackendRiskCard(' + r.id + ')';
-          html += `<div onclick="${clickFn}" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background 0.1s" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
-            <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.entity_name || r.display_name || r.assured_name}</div>
-              <div style="font-size:11px;color:var(--text2)">${r.region||'—'} · Inception: ${isoToUk(r.inception_date)} · Handler: ${r.handler||'—'} · ${obj.count} risk${obj.count!==1?'s':''}</div>
-            </div>
-            <div style="text-align:right;flex-shrink:0">
-              <div>${riskStatusBadgeHtml(r.status)}</div>
-              <div style="font-size:10px;color:var(--text2);margin-top:2px">${r.currency||''} ${prem} · Comm: ${comm}</div>
-            </div>
-          </div>`;
-        });
-        html += '</div></div>';
-      });
-
-      document.getElementById('ent-list').innerHTML = html || '<div class="notice info">No backend accounts match the current filters.</div>';
+      document.getElementById('ent-list').innerHTML = html || '<div class="notice info">No entities found. Use "+ Producer" and "+ Insured" to create them, or run the migration from Data Export.</div>';
     } catch(e){
       document.getElementById('ent-list').innerHTML = '<div class="notice err">Accounts load failed: '+e.message+'</div>';
     }
@@ -7672,6 +7667,35 @@ async function migrateEntitiesToPG() {
   } catch(e) {
     el.style.color = 'var(--err)';
     el.textContent = 'Migration failed: ' + e.message;
+  }
+}
+
+async function cleanupJunkRisks(dryRun) {
+  var el = document.getElementById('cleanup-notice');
+  if (el) { el.style.display = 'block'; el.style.color = 'var(--text2)'; el.textContent = dryRun ? 'Checking...' : 'Deleting...'; }
+  try {
+    var result = await apiFetch('/risks/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        no_premium: true,
+        no_inception: true,
+        no_producer: true,
+        dry_run: dryRun
+      })
+    });
+    if (el) {
+      if (dryRun) {
+        el.style.color = 'var(--text)';
+        el.textContent = 'Found ' + result.would_delete + ' junk risks (no premium, no inception, no producer). Click "Delete junk risks" to remove them.';
+      } else {
+        el.style.color = 'var(--ok)';
+        el.textContent = '✓ Deleted ' + result.deleted + ' junk risks.';
+        renderPipeline();
+      }
+    }
+  } catch(e) {
+    if (el) { el.style.color = 'var(--err)'; el.textContent = 'Cleanup failed: ' + e.message; }
   }
 }
 
