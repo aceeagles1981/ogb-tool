@@ -69,10 +69,11 @@ You must return ONLY valid JSON with these sections:
   "tasks": [
     {
       "title": "...",
-      "description": "specific actionable description",
+      "description": "SPECIFIC and actionable — reference actual findings, name locations, cite specific values or deficiencies. Not generic.",
       "priority": "urgent | high | medium | low",
       "owner": "assign based on email TO field — see handler rules",
-      "category": "info_chase | review | market_approach | compliance | admin"
+      "category": "info_chase | review | market_approach | compliance | admin",
+      "due_date": "YYYY-MM-DD — calculate based on rules below"
     }
   ],
   "information_gaps": [
@@ -95,10 +96,28 @@ CRITICAL RULES:
 
 CONTEXT:
 - OG Broking specialises in marine cargo, STP, WHLL, FFL, and project cargo at Lloyd's
+- ABBREVIATIONS: STP = Stock Throughput Policy (NOT Straight-Through Processing). MC = Marine Cargo. WHLL = Warehouse Keepers and Logistics Liability. FFL = Freight Forwarder Liability. PC = Project Cargo. RI = Reinsurance. Fac = Facultative.
 - This is a wholesale Lloyd's broker — submissions come from overseas producers/cedants
 - Handlers: KE=Kether Eaglestone (senior, handles Turkey/RI, also overall team lead), EW=Edward Wilcox (LatAm, Dubai, project cargo), MM=Maisie Moss (cargo war), JK=Jonathan Kaye (US via RT Specialty)
 - Standard brokerage ~25%, OGB retain varies by producer relationship
 - Territory routing: Panama → check Fiducia first. Turkey → Integra panel. General cargo → Aviva as typical lead.
+
+TASK DUE DATE RULES (calculate from the email date):
+- Acknowledge receipt to producer: SAME DAY as email date
+- Review attached documentation: NEXT WORKING DAY after email date
+- Chase missing critical information: within 2 WORKING DAYS of email date
+- Market approach / obtain quotes: within 2-3 WORKING DAYS if submission is complete, otherwise after info received
+- If the email indicates URGENCY (words like "urgent", "asap", "immediate", "rush"): compress all dates by 1 day
+- If the email indicates a future inception (months away): relax market approach to 5 working days
+- If the submission is clearly incomplete (missing loss record, no turnover, no limits): prioritise info chase BEFORE market approach
+- Return due_date as YYYY-MM-DD format
+
+TASK QUALITY RULES:
+- Every task description MUST reference specific data — name the insured, cite values, reference specific locations or survey findings
+- "Review the slip" is NOT acceptable. "Review King Cargo STP slip — verify NatCat USD 3M sublimit adequacy for Panama EQ zone, check Coco Solito max value USD 3M against survey" IS acceptable
+- Acknowledgment task: include the producer name (e.g. "Acknowledge receipt to LATAM Re for King Cargo STP submission")
+- Info chase tasks: list the SPECIFIC items needed (e.g. "Chase LATAM Re for: inception/expiry dates, 5-year loss history, rate structure")
+- Market approach tasks: reference the product, territory, and any routing notes (e.g. "Approach Fiducia for Panama STP indication — USD 15M turnover, two Panama locations")
 """
 
 
