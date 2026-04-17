@@ -756,6 +756,27 @@ async function wfSaveAll() {
     if (!resp.ok) throw new Error(riskData.error || 'Failed to create risk');
     const riskId = riskData.id;
 
+    // Auto-link to entity if matching insured exists
+    if (riskId && risk.assured_name) {
+      try {
+        const entResp = await fetch(BACKEND + '/entities?type=insured&q=' + encodeURIComponent(risk.assured_name) + '&limit=5', {
+          headers: authHeaders()
+        });
+        const entData = await entResp.json();
+        if (entData.items && entData.items.length) {
+          // Exact or close match — link automatically
+          const match = entData.items.find(function(e) {
+            return e.name.toLowerCase().trim() === (risk.assured_name || '').toLowerCase().trim();
+          }) || entData.items[0];
+          await fetch(BACKEND + '/risks/' + riskId, {
+            method: 'PATCH',
+            headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()),
+            body: JSON.stringify({ entity_id: match.id })
+          });
+        }
+      } catch(linkErr) { console.warn('Entity auto-link skipped:', linkErr); }
+    }
+
     // Create tasks
     if (outputs.tasks?.length && riskId) {
       for (const t of outputs.tasks) {

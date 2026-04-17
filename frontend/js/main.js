@@ -2268,9 +2268,9 @@ function openBackendRiskCard(riskId){
         <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
           <div>
             <div style="font-size:18px;font-weight:700;color:var(--text)">${risk.display_name || risk.assured_name}</div>
-            <div class="muted" style="margin-top:4px">${risk.producer || '—'} · ${risk.region || '—'} · ${risk.product || '—'} · ${risk.handler || '—'}</div>
+            <div class="muted" style="margin-top:4px">${risk.producer || '—'} · ${risk.region || '—'} · ${risk.product || '—'} · ${risk.handler || '—'}${risk.entity_name ? ' · <span style="cursor:pointer;text-decoration:underline" onclick="openEntityCard('+risk.entity_id+')">' + escapeHtml(risk.entity_name) + '</span>' : ''}</div>
           </div>
-          <div style="display:flex;align-items:center;gap:8px">${riskStatusBadgeHtml(risk.status)}<button class="btn" onclick="document.getElementById('ent-card').style.display='none'">Close</button></div>
+          <div style="display:flex;align-items:center;gap:8px">${!risk.entity_id ? '<button class="btn sm" onclick="linkRiskToEntity('+risk.id+')">Link insured</button>' : ''}${riskStatusBadgeHtml(risk.status)}<button class="btn" onclick="document.getElementById('ent-card').style.display='none'">Close</button></div>
         </div>
         <div style="padding:18px 20px">
           <div class="row" style="margin-bottom:14px">
@@ -2289,6 +2289,7 @@ function openBackendRiskCard(riskId){
             ${risk.notes ? '<div style="margin-top:8px;font-size:12px;color:var(--text2);white-space:pre-wrap">'+risk.notes+'</div>' : ''}
             ${risk.review_reason ? '<div class="notice warn" style="margin-top:8px">Review: '+risk.review_reason+'</div>' : ''}
           </div>
+          ${buildPostBindChecklistHtml(risk)}
           <div class="card" style="padding:12px 14px;margin-bottom:12px">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
               <div class="sh" style="font-size:12px;margin:0">Tasks</div>
@@ -2337,6 +2338,280 @@ async function completeRiskTask(taskId, riskId){
     openBackendRiskCard(riskId);
     renderPipeline();
   } catch(e){ showNotice('Task update failed: '+e.message,'err'); }
+}
+
+function buildPostBindChecklistHtml(risk) {
+  // Only show for bound or later statuses
+  var boundStatuses = ['bound', 'renewal_pending', 'expired_review'];
+  if (boundStatuses.indexOf(canonicalRiskStatus(risk.status)) === -1) return '';
+
+  var items = [
+    { key: 'pb_evidence_of_cover', label: 'Evidence of cover / contract certain email sent', type: 'bool' },
+    { key: 'pb_subjectivities_cleared', label: 'All outstanding data requests or subjectivities finalised', type: 'bool' },
+    { key: 'pb_invoice_sent', label: 'Invoice sent to client', type: 'bool' },
+    { key: 'pb_firm_order_date', label: 'Firm order email', type: 'date' },
+    { key: 'pb_formal_offer_date', label: 'Formal offer email', type: 'date' },
+  ];
+  // Only show closings for direct accounting (non-bureau) risks
+  if (risk.direct_accounting) {
+    items.push({ key: 'pb_closings_sent', label: 'Closings sent to insurers / reinsurers (direct accounting)', type: 'bool' });
+  }
+
+  var total = items.length;
+  var done = items.filter(function(it) {
+    if (it.type === 'date') return !!risk[it.key];
+    return !!risk[it.key];
+  }).length;
+  var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  var barColor = pct === 100 ? 'var(--success, #22c55e)' : pct >= 50 ? 'var(--warn-fg, #f59e0b)' : 'var(--danger, #ef4444)';
+
+  var rows = items.map(function(it) {
+    if (it.type === 'date') {
+      var val = risk[it.key] || '';
+      var checked = !!val;
+      return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">' +
+        '<span style="font-size:16px;flex-shrink:0">' + (checked ? '✅' : '⬜') + '</span>' +
+        '<span style="flex:1;font-size:12px;' + (checked ? 'text-decoration:line-through;color:var(--text2)' : '') + '">' + it.label + '</span>' +
+        '<input type="date" value="' + (val || '') + '" style="font-size:11px;width:130px" onchange="togglePostBindField(' + risk.id + ',\'' + it.key + '\',this.value)">' +
+        (val ? '<span style="font-size:10px;color:var(--text2)">' + isoToUk(val) + '</span>' : '') +
+        '</div>';
+    }
+    var checked = !!risk[it.key];
+    return '<div onclick="togglePostBindField(' + risk.id + ',\'' + it.key + '\',' + !checked + ')" style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer">' +
+      '<span style="font-size:16px;flex-shrink:0">' + (checked ? '✅' : '⬜') + '</span>' +
+      '<span style="flex:1;font-size:12px;' + (checked ? 'text-decoration:line-through;color:var(--text2)' : '') + '">' + it.label + '</span>' +
+      '</div>';
+  }).join('');
+
+  return '<div class="card" style="padding:12px 14px;margin-bottom:12px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+      '<div class="sh" style="font-size:12px;margin:0">Post-bind checklist (E&O)</div>' +
+      '<span style="font-size:11px;font-weight:600;color:' + barColor + '">' + done + '/' + total + '</span>' +
+    '</div>' +
+    '<div style="height:4px;background:var(--border);border-radius:2px;margin-bottom:10px;overflow:hidden">' +
+      '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:2px;transition:width 0.3s"></div>' +
+    '</div>' +
+    rows +
+    (!risk.direct_accounting ? '<div style="font-size:10px;color:var(--text2);margin-top:8px;font-style:italic">Closings: N/A — bureau market (Lloyd\'s / IUA / LIRMA)</div>' : '') +
+    '</div>';
+}
+
+async function togglePostBindField(riskId, field, value) {
+  try {
+    var patch = {};
+    patch[field] = value;
+    await apiFetch('/risks/' + riskId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    openBackendRiskCard(riskId);
+  } catch(e) { showNotice('Failed to update: ' + e.message, 'err'); }
+}
+
+
+// --- Entity CRUD ---
+
+async function fetchEntityList(params) {
+  var qs = [];
+  if (params) {
+    if (params.q) qs.push('q=' + encodeURIComponent(params.q));
+    if (params.type) qs.push('type=' + encodeURIComponent(params.type));
+    if (params.parent_id) qs.push('parent_id=' + params.parent_id);
+    if (params.limit) qs.push('limit=' + params.limit);
+  }
+  var resp = await apiFetch('/entities' + (qs.length ? '?' + qs.join('&') : ''));
+  return resp.items || [];
+}
+
+async function createEntityPrompt(entityType) {
+  var name = window.prompt((entityType === 'producer' ? 'Producer' : 'Insured') + ' name:');
+  if (!name || !name.trim()) return;
+  var payload = { name: name.trim(), entity_type: entityType };
+  if (entityType === 'insured') {
+    // Fetch producers for parent selection
+    try {
+      var producers = await fetchEntityList({ type: 'producer', limit: 100 });
+      if (producers.length) {
+        var prodList = producers.map(function(p, i) { return (i + 1) + '. ' + p.name; }).join('\n');
+        var choice = window.prompt('Select producer (enter number):\n' + prodList + '\n\nOr leave blank for none');
+        if (choice && !isNaN(Number(choice))) {
+          var idx = Number(choice) - 1;
+          if (idx >= 0 && idx < producers.length) {
+            payload.parent_id = producers[idx].id;
+          }
+        }
+      }
+    } catch(e) { /* proceed without parent */ }
+    var region = window.prompt('Region (e.g. Turkey, LatAm, UK):', '');
+    if (region) payload.region = region;
+    var handler = window.prompt('Handler initials (e.g. KE, EW):', '');
+    if (handler) payload.handler = handler;
+  } else {
+    var region = window.prompt('Region (e.g. Turkey, LatAm, UK):', '');
+    if (region) payload.region = region;
+  }
+  try {
+    await apiFetch('/entities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    showNotice('✓ ' + (entityType === 'producer' ? 'Producer' : 'Insured') + ' created', 'ok');
+    renderEntities();
+  } catch(e) { showNotice('Create failed: ' + e.message, 'err'); }
+}
+
+async function openEntityCard(entityId) {
+  try {
+    var entity = await apiFetch('/entities/' + entityId);
+    var notes = await apiFetch('/entities/' + entityId + '/notes').catch(function() { return { items: [] }; });
+    var wrap = document.getElementById('ent-card');
+    var inner = document.getElementById('ent-card-inner');
+    if (!wrap || !inner) return;
+
+    var isProducer = entity.entity_type === 'producer';
+    var childrenHtml = '';
+    if (isProducer && entity.children && entity.children.length) {
+      childrenHtml = '<div class="card" style="padding:12px 14px;margin-bottom:12px">' +
+        '<div class="sh" style="font-size:12px">Insureds (' + entity.children.length + ')</div>' +
+        entity.children.map(function(c) {
+          return '<div onclick="openEntityCard(' + c.id + ')" style="display:flex;justify-content:space-between;padding:6px 8px;border-radius:4px;cursor:pointer;font-size:12px" onmouseover="this.style.background=\'var(--bg)\'" onmouseout="this.style.background=\'\'">' +
+            '<span style="font-weight:500">' + escapeHtml(c.name) + '</span>' +
+            '<span class="muted">' + c.risk_count + ' risk' + (c.risk_count !== 1 ? 's' : '') + '</span>' +
+            '</div>';
+        }).join('') + '</div>';
+    }
+
+    var risksHtml = '';
+    if (entity.risks && entity.risks.length) {
+      risksHtml = '<div class="card" style="padding:12px 14px;margin-bottom:12px">' +
+        '<div class="sh" style="font-size:12px">Risks (' + entity.risks.length + ')</div>' +
+        entity.risks.map(function(r) {
+          var prem = r.gross_premium != null ? Number(r.gross_premium).toLocaleString() : '—';
+          return '<div onclick="openBackendRiskCard(' + r.id + ')" style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-radius:4px;cursor:pointer;font-size:12px" onmouseover="this.style.background=\'var(--bg)\'" onmouseout="this.style.background=\'\'">' +
+            '<div><span style="font-weight:500">' + escapeHtml(r.display_name || r.assured_name) + '</span>' +
+            '<span class="muted"> · ' + (r.accounting_year || '') + ' · ' + (r.product || '') + '</span></div>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+            '<span class="muted">' + (r.currency || '') + ' ' + prem + '</span>' +
+            riskStatusBadgeHtml(r.status) + '</div></div>';
+        }).join('') + '</div>';
+    }
+
+    var notesArr = notes.items || [];
+    var notesHtml = '<div class="card" style="padding:12px 14px;margin-bottom:12px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+        '<div class="sh" style="font-size:12px;margin:0">Notes & correspondence (' + notesArr.length + ')</div>' +
+        '<button class="btn sm" onclick="addEntityNote(' + entityId + ')">+ Note</button>' +
+      '</div>';
+    if (notesArr.length) {
+      notesHtml += notesArr.map(function(n) {
+        return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="font-size:11px;color:var(--text2)">' + (n.note_date || '—') + ' · ' + escapeHtml(n.handler || '') + ' · ' + escapeHtml(n.doc_type || '') + '</div>' +
+          '<div style="font-size:12px;margin-top:3px">' + escapeHtml(n.summary || '') + '</div>' +
+          (n.actions && n.actions.length ? '<div style="margin-top:4px;font-size:11px;color:var(--text2)">Actions: ' + n.actions.map(escapeHtml).join('; ') + '</div>' : '') +
+          '</div>';
+      }).join('');
+    } else {
+      notesHtml += '<div class="muted">No notes yet.</div>';
+    }
+    notesHtml += '</div>';
+
+    inner.innerHTML =
+      '<div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:12px">' +
+        '<div>' +
+          '<div style="font-size:18px;font-weight:700;color:var(--text)">' + escapeHtml(entity.name) + '</div>' +
+          '<div class="muted" style="margin-top:4px">' +
+            '<span class="badge ' + (isProducer ? 'info' : '') + '" style="font-size:10px">' + (isProducer ? 'Producer' : 'Insured') + '</span>' +
+            (entity.parent_name ? ' · Producer: <span style="cursor:pointer;text-decoration:underline" onclick="openEntityCard(' + entity.parent_id + ')">' + escapeHtml(entity.parent_name) + '</span>' : '') +
+            (entity.region ? ' · ' + escapeHtml(entity.region) : '') +
+            (entity.handler ? ' · ' + escapeHtml(entity.handler) : '') +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<button class="btn sm" onclick="editEntityPrompt(' + entityId + ')">Edit</button>' +
+          '<button class="btn" onclick="document.getElementById(\'ent-card\').style.display=\'none\'">Close</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="padding:18px 20px">' +
+        '<div class="row" style="margin-bottom:14px">' +
+          '<div class="metric"><label>Type</label><div class="val">' + (isProducer ? 'Producer' : 'Insured') + '</div></div>' +
+          '<div class="metric"><label>Risks</label><div class="val" style="font-size:18px">' + entity.risk_count + '</div></div>' +
+          '<div class="metric"><label>Notes</label><div class="val" style="font-size:18px">' + entity.note_count + '</div></div>' +
+          (isProducer ? '<div class="metric"><label>Insureds</label><div class="val" style="font-size:18px">' + (entity.children || []).length + '</div></div>' : '') +
+        '</div>' +
+        childrenHtml +
+        risksHtml +
+        notesHtml +
+      '</div>';
+    wrap.style.display = 'block';
+  } catch(e) { showNotice('Could not load entity: ' + e.message, 'err'); }
+}
+
+async function editEntityPrompt(entityId) {
+  try {
+    var entity = await apiFetch('/entities/' + entityId);
+    var name = window.prompt('Name:', entity.name);
+    if (name === null) return;
+    var region = window.prompt('Region:', entity.region || '');
+    var handler = window.prompt('Handler:', entity.handler || '');
+    var patch = {};
+    if (name.trim() && name !== entity.name) patch.name = name.trim();
+    if (region !== null && region !== (entity.region || '')) patch.region = region || null;
+    if (handler !== null && handler !== (entity.handler || '')) patch.handler = handler || null;
+    if (!Object.keys(patch).length) return;
+    await apiFetch('/entities/' + entityId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    showNotice('✓ Entity updated', 'ok');
+    openEntityCard(entityId);
+    renderEntities();
+  } catch(e) { showNotice('Update failed: ' + e.message, 'err'); }
+}
+
+async function addEntityNote(entityId) {
+  var summary = window.prompt('Note summary:');
+  if (!summary || !summary.trim()) return;
+  var handler = window.prompt('Handler (e.g. KE):', '');
+  try {
+    await apiFetch('/entities/' + entityId + '/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        summary: summary.trim(),
+        handler: handler || null,
+        note_date: new Date().toISOString().slice(0, 10),
+        doc_type: 'general-correspondence',
+        source: 'manual'
+      })
+    });
+    showNotice('✓ Note added', 'ok');
+    openEntityCard(entityId);
+  } catch(e) { showNotice('Note save failed: ' + e.message, 'err'); }
+}
+
+async function linkRiskToEntity(riskId) {
+  try {
+    var entities = await fetchEntityList({ type: 'insured', limit: 200 });
+    if (!entities.length) {
+      showNotice('No insureds found — create one first', 'warn');
+      return;
+    }
+    var list = entities.map(function(e, i) { return (i + 1) + '. ' + e.name + (e.parent_name ? ' (' + e.parent_name + ')' : ''); }).join('\n');
+    var choice = window.prompt('Link to insured (enter number):\n' + list);
+    if (!choice || isNaN(Number(choice))) return;
+    var idx = Number(choice) - 1;
+    if (idx < 0 || idx >= entities.length) return;
+    await apiFetch('/risks/' + riskId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_id: entities[idx].id })
+    });
+    showNotice('✓ Risk linked to ' + entities[idx].name, 'ok');
+    openBackendRiskCard(riskId);
+  } catch(e) { showNotice('Link failed: ' + e.message, 'err'); }
 }
 
 
@@ -3992,9 +4267,10 @@ function renderEntities(){
           var prem = r.gross_premium!=null ? Number(r.gross_premium).toLocaleString() : '—';
           var commVal = r.locked_gbp_commission != null && r.locked_gbp_commission !== 0 ? r.locked_gbp_commission : r.estimated_gbp_commission;
           var comm = commVal!=null ? Number(commVal).toLocaleString() : '—';
-          html += `<div onclick="openBackendRiskCard(${r.id})" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background 0.1s" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
+          var clickFn = r.entity_id ? 'openEntityCard(' + r.entity_id + ')' : 'openBackendRiskCard(' + r.id + ')';
+          html += `<div onclick="${clickFn}" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background 0.1s" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
             <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.display_name || r.assured_name}</div>
+              <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.entity_name || r.display_name || r.assured_name}</div>
               <div style="font-size:11px;color:var(--text2)">${r.region||'—'} · Inception: ${isoToUk(r.inception_date)} · Handler: ${r.handler||'—'} · ${obj.count} risk${obj.count!==1?'s':''}</div>
             </div>
             <div style="text-align:right;flex-shrink:0">
@@ -7311,6 +7587,93 @@ function exportBookOnly(){navigator.clipboard.writeText(JSON.stringify(gs().book
 function downloadDataJson(){var b=new Blob([JSON.stringify({_at:new Date().toISOString(),ogb_state:gs(),ogb_entities:entGetState()},null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='ogb-'+new Date().toISOString().slice(0,10)+'.json';a.click();}
 function importData(){var raw=(document.getElementById('import-json').value||'').trim();var el=document.getElementById('import-notice');el.style.display='block';if(!raw){el.textContent='Paste JSON first';el.style.color='var(--err)';return;}var p;try{p=JSON.parse(raw);}catch(e){el.textContent='Invalid JSON: '+e.message;el.style.color='var(--err)';return;}var imported=[];if(p.ogb_state){var ex=gs(),inc=p.ogb_state;if(inc.bookRows){if(!ex.bookRows)ex.bookRows=[];var ids=new Set(ex.bookRows.map(function(r){return r.id;}));var nr=inc.bookRows.filter(function(r){return !ids.has(r.id);});ex.bookRows=ex.bookRows.concat(nr);if(nr.length)imported.push(nr.length+' rows');}ss(ex);}if(p.ogb_entities){var exE=entGetState(),incE=p.ogb_entities;var ii=new Set((exE.insureds||[]).map(function(i){return i.id;}));var ni=(incE.insureds||[]).filter(function(i){return !ii.has(i.id);});exE.insureds=(exE.insureds||[]).concat(ni);entSave(exE);if(ni.length)imported.push(ni.length+' insureds');}el.textContent=imported.length?'✓ Imported: '+imported.join(', '):'Nothing new to import';el.style.color=imported.length?'var(--ok)':'var(--warn)';}
 function clearAllData(){if(!confirm('Clear ALL data?'))return;if(!confirm('Sure?'))return;localStorage.removeItem('og_state_v4');showNotice('Cleared — reload','warn');setTimeout(function(){location.reload();},1500);}
+
+function buildMigrationPayload() {
+  var ent = entGetState();
+  var insureds = ent.insureds || [];
+  var producers = ent.producers || [];
+  var payload = { entities: [], link_risks: true };
+
+  // Producers first
+  producers.forEach(function(p) {
+    payload.entities.push({
+      name: p.name,
+      entity_type: 'producer',
+      region: p.region || null,
+      handler: p.handler || null,
+      metadata: { localStorage_id: p.id },
+      notes: []
+    });
+  });
+
+  // Then insureds
+  insureds.forEach(function(ins) {
+    var prod = producers.find(function(p) { return p.id === ins.producerId; });
+    var notes = (ins.notes || []).map(function(n) {
+      return {
+        date: n.date || null,
+        handler: n.handler || null,
+        parties: n.parties || null,
+        summary: n.summary || null,
+        actions: n.actions || [],
+        statusChange: n.statusChange || null,
+        docType: n.docType || 'general-correspondence',
+        terms: n.terms || {},
+        source: 'localStorage_migration'
+      };
+    });
+    payload.entities.push({
+      name: ins.name,
+      entity_type: 'insured',
+      producer_name: prod ? prod.name : null,
+      region: ins.region || null,
+      handler: ins.handler || null,
+      metadata: { localStorage_id: ins.id },
+      notes: notes
+    });
+  });
+
+  return payload;
+}
+
+function previewMigration() {
+  var payload = buildMigrationPayload();
+  var producers = payload.entities.filter(function(e) { return e.entity_type === 'producer'; });
+  var insureds = payload.entities.filter(function(e) { return e.entity_type === 'insured'; });
+  var totalNotes = insureds.reduce(function(s, e) { return s + (e.notes || []).length; }, 0);
+  var el = document.getElementById('migrate-notice');
+  el.style.display = 'block';
+  el.style.color = 'var(--text)';
+  el.innerHTML = '<b>Preview:</b> ' + producers.length + ' producers, ' + insureds.length + ' insureds, ' + totalNotes + ' notes will be migrated. Existing entities won\'t be duplicated.';
+}
+
+async function migrateEntitiesToPG() {
+  var payload = buildMigrationPayload();
+  if (!payload.entities.length) {
+    showNotice('No localStorage entities to migrate', 'warn');
+    return;
+  }
+  if (!confirm('Migrate ' + payload.entities.length + ' entities to PostgreSQL? This is safe — duplicates are skipped.')) return;
+  var el = document.getElementById('migrate-notice');
+  el.style.display = 'block';
+  el.style.color = 'var(--text2)';
+  el.textContent = 'Migrating...';
+  try {
+    var result = await apiFetch('/entities/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    el.style.color = 'var(--ok)';
+    el.innerHTML = '✓ Done — ' + result.created + ' entities created, ' + result.notes_created + ' notes, ' + result.risks_linked + ' risks linked' +
+      (result.errors && result.errors.length ? '<br><span style="color:var(--warn)">Warnings: ' + result.errors.join('; ') + '</span>' : '');
+    showNotice('✓ Migration complete', 'ok');
+    renderEntities();
+  } catch(e) {
+    el.style.color = 'var(--err)';
+    el.textContent = 'Migration failed: ' + e.message;
+  }
+}
 
 // Draft & Renewal
 function draftMode(m){var c=document.getElementById('draft-comms-mode'),r=document.getElementById('draft-renewal-mode');if(c)c.style.display=m==='comms'?'block':'none';if(r)r.style.display=m==='renewal'?'block':'none';var tc=document.getElementById('draft-tab-comms'),tr=document.getElementById('draft-tab-renewal');if(tc)tc.classList.toggle('active',m==='comms');if(tr)tr.classList.toggle('active',m==='renewal');if(m==='renewal')populateRenewalRefs();}
