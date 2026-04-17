@@ -16,7 +16,7 @@
     </div>
     <div>
       <div style="font-size:13px;font-weight:700;color:#fff;line-height:1.2;letter-spacing:-0.01em">OG Broking</div>
-      <div style="font-size:10px;color:var(--text3);line-height:1.2;color:rgba(255,255,255,0.4);font-size:10px">Placement Tool &nbsp;·&nbsp; <span style="font-family:var(--font-mono)">v16.0 · 17 Apr 2026</span></div>
+      <div style="font-size:10px;color:var(--text3);line-height:1.2;color:rgba(255,255,255,0.4);font-size:10px">Placement Tool &nbsp;·&nbsp; <span style="font-family:var(--font-mono)">v17.0 · 17 Apr 2026</span></div>
     </div>
   </div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:rgba(255,255,255,0.4)">
@@ -1504,12 +1504,6 @@
       </div>
     </div>
 
-  <!-- Insured card modal -->
-  <div id="ent-card" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;overflow-y:auto;padding:24px 16px">
-    <div style="max-width:780px;margin:0 auto;background:var(--surface);border-radius:var(--radius);box-shadow:0 8px 32px rgba(0,0,0,0.18);overflow:hidden">
-      <div id="ent-card-inner"></div>
-    </div>
-  </div>
 </div><div id="projectcargo" class="panel">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:10px">
     <div>
@@ -2413,6 +2407,13 @@
 
 <script src="js/workflow.js"></script>
 <script src="js/comparison.js"></script>
+
+<!-- Insured/risk card modal — must be top-level, not inside a .panel div (display:none on parent hides fixed children) -->
+<div id="ent-card" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;overflow-y:auto;padding:24px 16px">
+  <div style="max-width:780px;margin:0 auto;background:var(--surface);border-radius:var(--radius);box-shadow:0 8px 32px rgba(0,0,0,0.18);overflow:hidden">
+    <div id="ent-card-inner"></div>
+  </div>
+</div>
 
 </body>
 </html>
