@@ -1,3 +1,4 @@
+
 import json
 import logging
 import os
@@ -53,6 +54,15 @@ elif CORS:
     logger.warning("FRONTEND_ORIGIN is not set. CORS is disabled to avoid open cross-origin access.")
 else:
     logger.warning("flask-cors is unavailable. CORS headers will not be sent.")
+
+# Explicit CORS handler — ensures preflight OPTIONS work for all routes including blueprints
+@app.after_request
+def add_cors_headers(response):
+    if FRONTEND_ORIGIN:
+        response.headers['Access-Control-Allow-Origin'] = FRONTEND_ORIGIN
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Admin-Token, X-User-Id, Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+    return response
 
 app.register_blueprint(workflow_bp)
 app.register_blueprint(comparison_bp)
@@ -312,6 +322,34 @@ CREATE TABLE IF NOT EXISTS activity_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS entities (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    entity_type TEXT NOT NULL DEFAULT 'insured',
+    parent_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+    region TEXT,
+    handler TEXT,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS entity_notes (
+    id SERIAL PRIMARY KEY,
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    risk_id INTEGER REFERENCES risks(id) ON DELETE SET NULL,
+    note_date TEXT,
+    handler TEXT,
+    parties TEXT,
+    summary TEXT,
+    actions JSONB DEFAULT '[]',
+    status_change TEXT,
+    doc_type TEXT DEFAULT 'general-correspondence',
+    terms JSONB DEFAULT '{}',
+    source TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_needs_review ON events(needs_review);
 CREATE INDEX IF NOT EXISTS idx_risks_status ON risks(status);
 CREATE INDEX IF NOT EXISTS idx_risks_accounting_year ON risks(accounting_year);
@@ -321,6 +359,12 @@ CREATE INDEX IF NOT EXISTS idx_risk_tasks_risk_id ON risk_tasks(risk_id);
 CREATE INDEX IF NOT EXISTS idx_risk_tasks_status ON risk_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_risk_ledger_entries_risk_id ON risk_ledger_entries(risk_id);
 CREATE INDEX IF NOT EXISTS idx_activity_entity ON activity_events(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+CREATE INDEX IF NOT EXISTS idx_entities_parent ON entities(parent_id);
+CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(LOWER(name));
+CREATE INDEX IF NOT EXISTS idx_entity_notes_entity ON entity_notes(entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_notes_risk ON entity_notes(risk_id);
+CREATE INDEX IF NOT EXISTS idx_risks_entity_id ON risks(entity_id);
 """
 
 
@@ -328,6 +372,76 @@ def ensure_schema() -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            # Migrations: add columns to existing tables (idempotent via DO blocks)
+            cur.execute("""
+                DO $$
+                BEGIN
+                    -- entity_id FK on risks
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='entity_id') THEN
+                        ALTER TABLE risks ADD COLUMN entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL;
+                    END IF;
+                    -- post-bind fields
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='pb_evidence_of_cover') THEN
+                        ALTER TABLE risks ADD COLUMN pb_evidence_of_cover BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='pb_subjectivities_cleared') THEN
+                        ALTER TABLE risks ADD COLUMN pb_subjectivities_cleared BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='pb_invoice_sent') THEN
+                        ALTER TABLE risks ADD COLUMN pb_invoice_sent BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='pb_closings_sent') THEN
+                        ALTER TABLE risks ADD COLUMN pb_closings_sent BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='pb_firm_order_date') THEN
+                        ALTER TABLE risks ADD COLUMN pb_firm_order_date DATE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='pb_formal_offer_date') THEN
+                        ALTER TABLE risks ADD COLUMN pb_formal_offer_date DATE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='risks' AND column_name='direct_accounting') THEN
+                        ALTER TABLE risks ADD COLUMN direct_accounting BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                    -- risk_documents table (was missing from SCHEMA_SQL, created ad-hoc previously)
+                    CREATE TABLE IF NOT EXISTS risk_documents (
+                        id SERIAL PRIMARY KEY,
+                        risk_id INTEGER REFERENCES risks(id) ON DELETE CASCADE,
+                        ingested_email_id INTEGER REFERENCES ingested_emails(id) ON DELETE SET NULL,
+                        filename TEXT,
+                        file_type TEXT,
+                        doc_type TEXT,
+                        doc_stage TEXT,
+                        source_party TEXT,
+                        raw_text TEXT,
+                        extracted_by TEXT,
+                        extraction_confidence NUMERIC(5,2),
+                        extraction_error TEXT,
+                        received_date DATE,
+                        created_by INTEGER,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    CREATE TABLE IF NOT EXISTS risk_terms (
+                        id SERIAL PRIMARY KEY,
+                        risk_document_id INTEGER REFERENCES risk_documents(id) ON DELETE CASCADE,
+                        risk_id INTEGER REFERENCES risks(id) ON DELETE CASCADE,
+                        doc_stage TEXT,
+                        source_party TEXT,
+                        terms_json JSONB,
+                        effective_date DATE,
+                        superseded_by INTEGER REFERENCES risk_terms(id) ON DELETE SET NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    CREATE TABLE IF NOT EXISTS risk_survey_findings (
+                        id SERIAL PRIMARY KEY,
+                        risk_document_id INTEGER REFERENCES risk_documents(id) ON DELETE CASCADE,
+                        risk_id INTEGER REFERENCES risks(id) ON DELETE CASCADE,
+                        findings_json JSONB,
+                        overall_rating TEXT,
+                        recommendations TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                END $$;
+            """)
     logger.info("Database schema ensured")
 
 
@@ -756,15 +870,19 @@ def log_event(conn, entity_type: str, entity_id: int, event_type: str, payload: 
 
 
 def get_risk_row(conn, risk_id: int) -> Optional[Dict[str, Any]]:
-    """Fetch a single risk row with account/matter names joined."""
+    """Fetch a single risk row with account/matter/entity names joined."""
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute("""
             SELECT r.*,
                    a.canonical_name AS account_name,
-                   m.title AS matter_title
+                   m.title AS matter_title,
+                   e.name AS entity_name,
+                   pe.name AS producer_entity_name
             FROM risks r
             LEFT JOIN accounts a ON a.id = r.account_id
             LEFT JOIN matters m ON m.id = r.matter_id
+            LEFT JOIN entities e ON e.id = r.entity_id
+            LEFT JOIN entities pe ON pe.id = e.parent_id
             WHERE r.id = %s
         """, (risk_id,))
         row = cur.fetchone()
@@ -812,6 +930,16 @@ def serialise_risk(row: Dict[str, Any]) -> Dict[str, Any]:
         "needs_review": bool(row.get("needs_review")),
         "review_reason": row.get("review_reason"),
         "merged_into_risk_id": row.get("merged_into_risk_id"),
+        "entity_id": row.get("entity_id"),
+        "entity_name": row.get("entity_name"),
+        "producer_entity_name": row.get("producer_entity_name"),
+        "pb_evidence_of_cover": bool(row.get("pb_evidence_of_cover")),
+        "pb_subjectivities_cleared": bool(row.get("pb_subjectivities_cleared")),
+        "pb_invoice_sent": bool(row.get("pb_invoice_sent")),
+        "pb_closings_sent": bool(row.get("pb_closings_sent")),
+        "pb_firm_order_date": str(row.get("pb_firm_order_date")) if row.get("pb_firm_order_date") else None,
+        "pb_formal_offer_date": str(row.get("pb_formal_offer_date")) if row.get("pb_formal_offer_date") else None,
+        "direct_accounting": bool(row.get("direct_accounting")),
         "created_at": iso(row.get("created_at")),
         "updated_at": iso(row.get("updated_at")),
     }
@@ -874,7 +1002,7 @@ def health():
         with get_conn() as conn:
             with conn.cursor() as cur:
                 counts = {}
-                for table, key in [("users","user_count"),("events","event_count"),("ingested_emails","email_count"),("risks","risk_count"),("risk_tasks","task_count"),("activity_events","activity_event_count")]:
+                for table, key in [("users","user_count"),("events","event_count"),("ingested_emails","email_count"),("risks","risk_count"),("risk_tasks","task_count"),("activity_events","activity_event_count"),("entities","entity_count"),("entity_notes","entity_note_count")]:
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
                     counts[key] = cur.fetchone()[0]
         return jsonify({
@@ -1115,8 +1243,12 @@ def list_risks():
 
     sql = """
         SELECT r.*,
-               COALESCE((SELECT COUNT(*) FROM risk_tasks t WHERE t.risk_id = r.id AND t.status != 'done'), 0) AS open_task_count
+               COALESCE((SELECT COUNT(*) FROM risk_tasks t WHERE t.risk_id = r.id AND t.status != 'done'), 0) AS open_task_count,
+               e.name AS entity_name,
+               pe.name AS producer_entity_name
         FROM risks r
+        LEFT JOIN entities e ON e.id = r.entity_id
+        LEFT JOIN entities pe ON pe.id = e.parent_id
     """
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -1150,9 +1282,10 @@ def create_risk():
                     accounting_year, inception_date, expiry_date, currency,
                     gross_premium, brokerage_pct, retained_pct, estimated_gbp_commission,
                     adjustable, profit_commission_expected, notes, source_event_id,
-                    ai_extracted, needs_review, review_reason, merged_into_risk_id
+                    ai_extracted, needs_review, review_reason, merged_into_risk_id,
+                    entity_id, direct_accounting
                 )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s)
                 RETURNING *
             """, (
                 assured_name,
@@ -1178,6 +1311,8 @@ def create_risk():
                 json.dumps(payload.get("ai_extracted") or {}),
                 bool(payload.get("needs_review", False)),
                 payload.get("review_reason"),
+                parse_int_safe(payload.get("entity_id")),
+                bool(payload.get("direct_accounting", False)),
             ))
             row = dict(cur.fetchone())
             log_event(conn, "risk", row["id"], "risk_created", {"assured_name": assured_name, "status": canonical_risk_status(payload.get("status"))}, user_id)
@@ -1231,6 +1366,14 @@ def update_risk(risk_id: int):
         "needs_review": bool(payload.get("needs_review")) if "needs_review" in payload else None,
         "review_reason": payload.get("review_reason"),
         "merged_into_risk_id": payload.get("merged_into_risk_id"),
+        "entity_id": parse_int_safe(payload.get("entity_id")) if "entity_id" in payload else None,
+        "pb_evidence_of_cover": bool(payload.get("pb_evidence_of_cover")) if "pb_evidence_of_cover" in payload else None,
+        "pb_subjectivities_cleared": bool(payload.get("pb_subjectivities_cleared")) if "pb_subjectivities_cleared" in payload else None,
+        "pb_invoice_sent": bool(payload.get("pb_invoice_sent")) if "pb_invoice_sent" in payload else None,
+        "pb_closings_sent": bool(payload.get("pb_closings_sent")) if "pb_closings_sent" in payload else None,
+        "pb_firm_order_date": payload.get("pb_firm_order_date") if "pb_firm_order_date" in payload else None,
+        "pb_formal_offer_date": payload.get("pb_formal_offer_date") if "pb_formal_offer_date" in payload else None,
+        "direct_accounting": bool(payload.get("direct_accounting")) if "direct_accounting" in payload else None,
     }
     updates, params = [], []
     for field, value in allowed.items():
@@ -1390,8 +1533,12 @@ def portfolio_by_year():
                COALESCE((SELECT SUM(gbp_amount) FROM risk_ledger_entries le WHERE le.risk_id = r.id AND le.entry_type = 'rp'), 0) AS rp_gbp,
                COALESCE((SELECT SUM(gbp_amount) FROM risk_ledger_entries le WHERE le.risk_id = r.id AND le.entry_type = 'pc'), 0) AS pc_gbp,
                COALESCE((SELECT SUM(gbp_amount) FROM risk_ledger_entries le WHERE le.risk_id = r.id AND le.entry_type = 'adj'), 0) AS adj_gbp,
-               COALESCE((SELECT COUNT(*) FROM risk_tasks t WHERE t.risk_id = r.id AND t.status != 'done'), 0) AS open_task_count
+               COALESCE((SELECT COUNT(*) FROM risk_tasks t WHERE t.risk_id = r.id AND t.status != 'done'), 0) AS open_task_count,
+               e.name AS entity_name,
+               pe.name AS producer_entity_name
         FROM risks r
+        LEFT JOIN entities e ON e.id = r.entity_id
+        LEFT JOIN entities pe ON pe.id = e.parent_id
         WHERE {" AND ".join(where)}
         ORDER BY LOWER(r.assured_name), r.id DESC
     """
@@ -1627,6 +1774,449 @@ def store_extractions_endpoint(risk_id):
                         '\n'.join(findings.get('recommendations', []))
                     ))
     return jsonify({'document_ids': doc_ids})
+
+
+# -----------------------------------------------------------------------------
+# Entity endpoints
+# -----------------------------------------------------------------------------
+
+def serialise_entity(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "entity_type": row.get("entity_type"),
+        "parent_id": row.get("parent_id"),
+        "parent_name": row.get("parent_name"),
+        "region": row.get("region"),
+        "handler": row.get("handler"),
+        "metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+        "risk_count": int(row.get("risk_count") or 0),
+        "note_count": int(row.get("note_count") or 0),
+        "created_at": iso(row.get("created_at")),
+        "updated_at": iso(row.get("updated_at")),
+    }
+
+
+def serialise_entity_note(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "entity_id": row.get("entity_id"),
+        "risk_id": row.get("risk_id"),
+        "note_date": row.get("note_date"),
+        "handler": row.get("handler"),
+        "parties": row.get("parties"),
+        "summary": row.get("summary"),
+        "actions": row.get("actions") if isinstance(row.get("actions"), list) else [],
+        "status_change": row.get("status_change"),
+        "doc_type": row.get("doc_type"),
+        "terms": row.get("terms") if isinstance(row.get("terms"), dict) else {},
+        "source": row.get("source"),
+        "created_at": iso(row.get("created_at")),
+    }
+
+
+@app.get("/entities")
+@require_admin
+@rate_limited("default_read")
+def list_entities():
+    q = (request.args.get("q") or "").strip()
+    entity_type = (request.args.get("type") or "").strip()
+    parent_id = parse_int_safe(request.args.get("parent_id"))
+    limit = min(int(request.args.get("limit") or 250), 1000)
+    offset = max(int(request.args.get("offset") or 0), 0)
+
+    where, params = [], []
+    if q:
+        where.append("LOWER(e.name) LIKE %s")
+        params.append(f"%{q.lower()}%")
+    if entity_type:
+        where.append("e.entity_type = %s")
+        params.append(entity_type)
+    if parent_id is not None:
+        where.append("e.parent_id = %s")
+        params.append(parent_id)
+
+    sql = """
+        SELECT e.*,
+               p.name AS parent_name,
+               COALESCE((SELECT COUNT(*) FROM risks r WHERE r.entity_id = e.id AND r.merged_into_risk_id IS NULL), 0) AS risk_count,
+               COALESCE((SELECT COUNT(*) FROM entity_notes en WHERE en.entity_id = e.id), 0) AS note_count
+        FROM entities e
+        LEFT JOIN entities p ON p.id = e.parent_id
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY e.entity_type, LOWER(e.name), e.id LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, params)
+            items = [serialise_entity(dict(r)) for r in cur.fetchall()]
+    return jsonify({"items": items, "total": len(items)})
+
+
+@app.post("/entities")
+@require_admin
+@rate_limited("default_write")
+def create_entity():
+    payload = request.get_json(force=True, silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    entity_type = (payload.get("entity_type") or "insured").strip()
+    if entity_type not in ("insured", "producer"):
+        return jsonify({"error": "entity_type must be 'insured' or 'producer'"}), 400
+    parent_id = parse_int_safe(payload.get("parent_id"))
+    user_id = get_user_id_from_request()
+
+    with get_conn() as conn:
+        if parent_id is not None:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM entities WHERE id = %s", (parent_id,))
+                if not cur.fetchone():
+                    return jsonify({"error": "Parent entity not found"}), 404
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                INSERT INTO entities (name, entity_type, parent_id, region, handler, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (
+                name, entity_type, parent_id,
+                payload.get("region"), payload.get("handler"),
+                json.dumps(payload.get("metadata") or {}),
+            ))
+            row = dict(cur.fetchone())
+            row["parent_name"] = None
+            row["risk_count"] = 0
+            row["note_count"] = 0
+            log_event(conn, "entity", row["id"], "entity_created", {"name": name, "entity_type": entity_type}, user_id)
+    return jsonify(serialise_entity(row)), 201
+
+
+@app.get("/entities/<int:entity_id>")
+@require_admin
+@rate_limited("default_read")
+def get_entity(entity_id: int):
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                SELECT e.*,
+                       p.name AS parent_name,
+                       COALESCE((SELECT COUNT(*) FROM risks r WHERE r.entity_id = e.id AND r.merged_into_risk_id IS NULL), 0) AS risk_count,
+                       COALESCE((SELECT COUNT(*) FROM entity_notes en WHERE en.entity_id = e.id), 0) AS note_count
+                FROM entities e
+                LEFT JOIN entities p ON p.id = e.parent_id
+                WHERE e.id = %s
+            """, (entity_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "Entity not found"}), 404
+
+            # Also fetch child entities (insureds under a producer)
+            cur.execute("""
+                SELECT e.*,
+                       COALESCE((SELECT COUNT(*) FROM risks r WHERE r.entity_id = e.id AND r.merged_into_risk_id IS NULL), 0) AS risk_count,
+                       COALESCE((SELECT COUNT(*) FROM entity_notes en WHERE en.entity_id = e.id), 0) AS note_count
+                FROM entities e
+                WHERE e.parent_id = %s
+                ORDER BY LOWER(e.name)
+            """, (entity_id,))
+            children = []
+            for child in cur.fetchall():
+                c = dict(child)
+                c["parent_name"] = row["name"]
+                children.append(serialise_entity(c))
+
+            # Fetch risks linked to this entity
+            cur.execute("""
+                SELECT r.*,
+                       a.canonical_name AS account_name,
+                       m.title AS matter_title,
+                       e2.name AS entity_name,
+                       pe.name AS producer_entity_name
+                FROM risks r
+                LEFT JOIN accounts a ON a.id = r.account_id
+                LEFT JOIN matters m ON m.id = r.matter_id
+                LEFT JOIN entities e2 ON e2.id = r.entity_id
+                LEFT JOIN entities pe ON pe.id = e2.parent_id
+                WHERE r.entity_id = %s AND r.merged_into_risk_id IS NULL
+                ORDER BY r.accounting_year DESC, r.id DESC
+            """, (entity_id,))
+            risks = [serialise_risk(dict(r)) for r in cur.fetchall()]
+
+    result = serialise_entity(dict(row))
+    result["children"] = children
+    result["risks"] = risks
+    return jsonify(result)
+
+
+@app.patch("/entities/<int:entity_id>")
+@require_admin
+@rate_limited("default_write")
+def update_entity(entity_id: int):
+    payload = request.get_json(force=True, silent=True) or {}
+    user_id = get_user_id_from_request()
+    allowed = {
+        "name": payload.get("name"),
+        "entity_type": payload.get("entity_type"),
+        "parent_id": parse_int_safe(payload.get("parent_id")) if "parent_id" in payload else None,
+        "region": payload.get("region"),
+        "handler": payload.get("handler"),
+        "metadata": json.dumps(payload.get("metadata") or {}) if "metadata" in payload else None,
+    }
+    updates, params = [], []
+    for field, value in allowed.items():
+        if field in payload:
+            updates.append(f"{field} = %s")
+            params.append(value)
+    if not updates:
+        return jsonify({"error": "No valid fields to update"}), 400
+    updates.append("updated_at = NOW()")
+    params.append(entity_id)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE entities SET {', '.join(updates)} WHERE id = %s", params)
+            if cur.rowcount == 0:
+                return jsonify({"error": "Entity not found"}), 404
+            log_event(conn, "entity", entity_id, "entity_updated", payload, user_id)
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                SELECT e.*, p.name AS parent_name,
+                       COALESCE((SELECT COUNT(*) FROM risks r WHERE r.entity_id = e.id AND r.merged_into_risk_id IS NULL), 0) AS risk_count,
+                       COALESCE((SELECT COUNT(*) FROM entity_notes en WHERE en.entity_id = e.id), 0) AS note_count
+                FROM entities e LEFT JOIN entities p ON p.id = e.parent_id
+                WHERE e.id = %s
+            """, (entity_id,))
+            row = dict(cur.fetchone())
+    return jsonify(serialise_entity(row))
+
+
+@app.delete("/entities/<int:entity_id>")
+@require_admin
+@rate_limited("default_write")
+def delete_entity(entity_id: int):
+    user_id = get_user_id_from_request()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Check for linked risks — don't delete if risks exist
+            cur.execute("SELECT COUNT(*) FROM risks WHERE entity_id = %s AND merged_into_risk_id IS NULL", (entity_id,))
+            risk_count = cur.fetchone()[0]
+            if risk_count > 0:
+                return jsonify({"error": f"Cannot delete: {risk_count} risk(s) linked to this entity. Unlink or reassign them first."}), 400
+            # Unlink children (set parent_id to NULL)
+            cur.execute("UPDATE entities SET parent_id = NULL, updated_at = NOW() WHERE parent_id = %s", (entity_id,))
+            cur.execute("DELETE FROM entities WHERE id = %s", (entity_id,))
+            if cur.rowcount == 0:
+                return jsonify({"error": "Entity not found"}), 404
+            log_event(conn, "entity", entity_id, "entity_deleted", {}, user_id)
+    return jsonify({"ok": True, "deleted": entity_id})
+
+
+# -----------------------------------------------------------------------------
+# Entity notes endpoints
+# -----------------------------------------------------------------------------
+
+@app.get("/entities/<int:entity_id>/notes")
+@require_admin
+@rate_limited("default_read")
+def list_entity_notes(entity_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM entities WHERE id = %s", (entity_id,))
+            if not cur.fetchone():
+                return jsonify({"error": "Entity not found"}), 404
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                SELECT * FROM entity_notes
+                WHERE entity_id = %s
+                ORDER BY COALESCE(note_date, created_at::text) DESC, id DESC
+            """, (entity_id,))
+            items = [serialise_entity_note(dict(r)) for r in cur.fetchall()]
+    return jsonify({"items": items, "total": len(items)})
+
+
+@app.post("/entities/<int:entity_id>/notes")
+@require_admin
+@rate_limited("default_write")
+def create_entity_note(entity_id: int):
+    payload = request.get_json(force=True, silent=True) or {}
+    user_id = get_user_id_from_request()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM entities WHERE id = %s", (entity_id,))
+            if not cur.fetchone():
+                return jsonify({"error": "Entity not found"}), 404
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                INSERT INTO entity_notes
+                    (entity_id, risk_id, note_date, handler, parties, summary,
+                     actions, status_change, doc_type, terms, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (
+                entity_id,
+                parse_int_safe(payload.get("risk_id")),
+                payload.get("note_date") or payload.get("date"),
+                payload.get("handler"),
+                payload.get("parties"),
+                payload.get("summary"),
+                json.dumps(payload.get("actions") or []),
+                payload.get("status_change"),
+                payload.get("doc_type") or "general-correspondence",
+                json.dumps(payload.get("terms") or {}),
+                payload.get("source"),
+            ))
+            row = dict(cur.fetchone())
+            log_event(conn, "entity", entity_id, "note_created", {"summary": (payload.get("summary") or "")[:100]}, user_id)
+    return jsonify(serialise_entity_note(row)), 201
+
+
+# -----------------------------------------------------------------------------
+# Entity import (localStorage migration)
+# -----------------------------------------------------------------------------
+
+@app.post("/entities/import")
+@require_admin
+@rate_limited("default_write")
+def import_entities():
+    """Bulk import entities and notes from localStorage JSON export.
+
+    Expected payload:
+    {
+        "entities": [
+            {
+                "name": "Integra",
+                "entity_type": "producer",
+                "region": "Turkey",
+                "handler": "KE",
+                "metadata": {},
+                "notes": [...]
+            },
+            {
+                "name": "Ekol Lojistik",
+                "entity_type": "insured",
+                "producer_name": "Integra",  // resolved to parent_id
+                "region": "Turkey",
+                "handler": "KE",
+                "metadata": {},
+                "notes": [
+                    {"date": "...", "handler": "KE", "summary": "...", ...}
+                ]
+            }
+        ],
+        "link_risks": true  // if true, fuzzy-match risks to entities by assured_name
+    }
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    entities_data = payload.get("entities") or []
+    link_risks = bool(payload.get("link_risks", True))
+    user_id = get_user_id_from_request()
+
+    if not entities_data:
+        return jsonify({"error": "No entities provided"}), 400
+
+    results = {"created": 0, "notes_created": 0, "risks_linked": 0, "errors": []}
+
+    with get_conn() as conn:
+        # Pass 1: create producers first (so insured parent_id can resolve)
+        name_to_id: Dict[str, int] = {}
+        for ent in entities_data:
+            if (ent.get("entity_type") or "insured") == "producer":
+                name = (ent.get("name") or "").strip()
+                if not name:
+                    results["errors"].append(f"Skipped producer with empty name")
+                    continue
+                with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                    # Upsert: skip if name already exists
+                    cur.execute("SELECT id FROM entities WHERE LOWER(name) = %s AND entity_type = 'producer'", (name.lower(),))
+                    existing = cur.fetchone()
+                    if existing:
+                        name_to_id[name.lower()] = existing["id"]
+                        continue
+                    cur.execute("""
+                        INSERT INTO entities (name, entity_type, region, handler, metadata)
+                        VALUES (%s, 'producer', %s, %s, %s)
+                        RETURNING id
+                    """, (name, ent.get("region"), ent.get("handler"), json.dumps(ent.get("metadata") or {})))
+                    eid = cur.fetchone()["id"]
+                    name_to_id[name.lower()] = eid
+                    results["created"] += 1
+
+        # Pass 2: create insureds with parent_id resolved
+        for ent in entities_data:
+            if (ent.get("entity_type") or "insured") != "insured":
+                continue
+            name = (ent.get("name") or "").strip()
+            if not name:
+                results["errors"].append(f"Skipped insured with empty name")
+                continue
+            producer_name = (ent.get("producer_name") or ent.get("producer") or "").strip()
+            parent_id = name_to_id.get(producer_name.lower()) if producer_name else None
+
+            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                cur.execute("SELECT id FROM entities WHERE LOWER(name) = %s AND entity_type = 'insured'", (name.lower(),))
+                existing = cur.fetchone()
+                if existing:
+                    eid = existing["id"]
+                    name_to_id[name.lower()] = eid
+                else:
+                    cur.execute("""
+                        INSERT INTO entities (name, entity_type, parent_id, region, handler, metadata)
+                        VALUES (%s, 'insured', %s, %s, %s, %s)
+                        RETURNING id
+                    """, (name, parent_id, ent.get("region"), ent.get("handler"), json.dumps(ent.get("metadata") or {})))
+                    eid = cur.fetchone()["id"]
+                    name_to_id[name.lower()] = eid
+                    results["created"] += 1
+
+            # Import notes
+            for note in (ent.get("notes") or []):
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO entity_notes
+                            (entity_id, note_date, handler, parties, summary,
+                             actions, status_change, doc_type, terms, source)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        eid,
+                        note.get("date") or note.get("note_date"),
+                        note.get("handler"),
+                        note.get("parties"),
+                        note.get("summary"),
+                        json.dumps(note.get("actions") or []),
+                        note.get("statusChange") or note.get("status_change"),
+                        note.get("docType") or note.get("doc_type") or "general-correspondence",
+                        json.dumps(note.get("terms") or {}),
+                        note.get("source") or "localStorage_import",
+                    ))
+                    results["notes_created"] += 1
+
+        # Pass 3: link existing risks to entities by assured_name
+        if link_risks:
+            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                cur.execute("SELECT id, assured_name FROM risks WHERE entity_id IS NULL AND merged_into_risk_id IS NULL")
+                unlinked_risks = cur.fetchall()
+            for risk_row in unlinked_risks:
+                rname = normalise_name(risk_row["assured_name"] or "")
+                if not rname:
+                    continue
+                # Exact match first
+                matched_id = name_to_id.get(rname)
+                if not matched_id:
+                    # Try substring match (entity name contained in risk name or vice versa)
+                    for ename, eid in name_to_id.items():
+                        if ename in rname or rname in ename:
+                            matched_id = eid
+                            break
+                if matched_id:
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE risks SET entity_id = %s, updated_at = NOW() WHERE id = %s", (matched_id, risk_row["id"]))
+                        results["risks_linked"] += 1
+
+        log_event(conn, "entity", 0, "bulk_import", results, user_id)
+
+    return jsonify({"ok": True, **results})
 
 
 if __name__ == "__main__":
