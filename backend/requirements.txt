@@ -1,6 +1,8 @@
 flask==3.1.0
+flask-cors==4.0.1
 gunicorn==23.0.0
 psycopg[binary]==3.2.9
+psycopg2-binary==2.9.9
 requests==2.32.3
 extract-msg==0.52.0
 python-dateutil==2.9.0
