@@ -528,99 +528,12 @@
         <div style="grid-column:1/-1"><div class="muted" style="font-size:10px;margin-bottom:3px">ACTIONS (one per line)</div><textarea id="en-actions" rows="2" style="font-size:12px;padding:5px 8px;resize:vertical"></textarea></div>
         <div><div class="muted" style="font-size:10px;margin-bottom:3px">STATUS CHANGE</div><input type="text" id="en-status" style="font-size:12px;padding:5px 8px" placeholder="e.g. Quoted to Bound"></div>
       </div>
-      <div style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:14px">
-        <div class="sh" style="font-size:12px;margin-bottom:8px">Assign to account</div>
-        <div id="en-match-badge" style="margin-bottom:10px"></div>
-        <div class="fg"><label style="font-size:11px">Insured</label><select id="en-insured-select" style="font-size:12px" onchange="populateEnquirySelect(this.value)"><option value="">— select insured —</option></select></div>
-        <div class="fg" style="margin-top:8px"><label style="font-size:11px">Enquiry / inception</label><select id="en-enquiry-select" style="font-size:12px"><option value="">— select —</option></select></div>
 
-        <!-- Create new insured -->
-        <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:12px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <span class="muted" style="font-size:11px">Or create a new insured</span>
-            <button class="btn sm" onclick="toggleSingleCreateInsured()" id="single-create-toggle">+ New insured</button>
-          </div>
-          <div id="single-create-form" style="display:none;background:var(--bg);border-radius:8px;padding:10px;border:1px solid var(--border)">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-              <div><label style="font-size:10px;font-weight:600;color:var(--text2);display:block;margin-bottom:3px">INSURED NAME</label>
-                <input type="text" id="single-new-name" style="font-size:12px;padding:5px 8px"></div>
-              <div><label style="font-size:10px;font-weight:600;color:var(--text2);display:block;margin-bottom:3px">PRODUCER</label>
-                <select id="single-new-producer" style="font-size:12px;padding:5px 8px">
-                  <option value="">— select producer —</option>
-                </select></div>
-              <div><label style="font-size:10px;font-weight:600;color:var(--text2);display:block;margin-bottom:3px">COUNTRY</label>
-                <select id="single-new-region" style="font-size:12px;padding:5px 8px">
-                  <option value="">— select country —</option>
-                </select></div>
-              <div><label style="font-size:10px;font-weight:600;color:var(--text2);display:block;margin-bottom:3px">HANDLER</label>
-                <select id="single-new-handler" style="font-size:12px;padding:5px 8px">
-                  <option value="KE">Kether Eaglestone (KE)</option>
-                  <option value="EW">Edward Wilcox (EW)</option>
-                  <option value="MM">Maisie Moss (MM)</option>
-                  <option value="JK">Jonathan Kaye (JK)</option>
-                </select></div>
-            </div>
-            <button class="btn primary" onclick="saveEmailNoteNewInsured()" style="font-size:11px">Create insured &amp; save note →</button>
-          </div>
-        </div>
+      <!-- Legacy form sections (Assign to account, Risk draft, Possible matches, Task drafts)
+           removed in Part 17. The workflow card (workflow-result-area below) replaces all of these.
+           wfSaveAll() saves directly from _workflowResult, not from form fields. -->
 
-        <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
-            <div>
-              <div class="sh" style="font-size:12px;margin-bottom:2px">Risk draft</div>
-              <div class="muted" style="font-size:11px">AI proposes a backend risk record from the email. Review, edit, then save to Railway.</div>
-            </div>
-            <div style="display:flex;gap:8px">
-              <button class="btn sm" onclick="generateIngestRiskDraft()" id="en-risk-generate-btn">Generate draft ↗</button>
-              <button class="btn sm primary" onclick="saveIngestRiskDraft()" id="en-risk-save-btn">Save risk + tasks →</button>
-            </div>
-          </div>
-          <div id="en-risk-msg" class="muted" style="font-size:11px;margin-bottom:8px"></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px">
-            <div style="grid-column:1/-1"><div class="muted" style="font-size:10px;margin-bottom:3px">ASSURED NAME</div><input type="text" id="en-risk-assured" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">PRODUCT</div><select id="en-risk-product" style="font-size:12px;padding:5px 8px"><option value="">— select —</option><option>Marine Cargo</option><option>Marine Cargo RI</option><option>STP</option><option>STP RI</option><option>WKLL RI</option><option>Stock Only</option><option>Stock Only RI</option><option>Cargo War</option></select></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">STATUS</div><select id="en-risk-status" style="font-size:12px;padding:5px 8px"><option value="submission">Submission</option><option value="in_market">In market</option><option value="quoted">Quoted</option><option value="firm_order">Firm order</option><option value="bound">Bound</option><option value="renewal_pending">Renewal pending</option></select></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">ACCOUNTING YEAR</div><input type="number" id="en-risk-year" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">CURRENCY</div><select id="en-risk-ccy" style="font-size:12px;padding:5px 8px"><option>USD</option><option>GBP</option><option>EUR</option><option>CAD</option></select></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">INCEPTION</div><input type="date" id="en-risk-inception" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">EXPIRY</div><input type="date" id="en-risk-expiry" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">GROSS PREMIUM</div><input type="number" id="en-risk-premium" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">BROKERAGE %</div><input type="number" step="0.01" id="en-risk-brokerage" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">RETAINED %</div><input type="number" step="0.01" id="en-risk-retained" value="100" style="font-size:12px;padding:5px 8px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">EST. GBP COMMISSION</div><input type="number" step="0.01" id="en-risk-comm" style="font-size:12px;padding:5px 8px"></div>
-            <div style="grid-column:1/-1"><div class="muted" style="font-size:10px;margin-bottom:3px">NOTES</div><textarea id="en-risk-notes" rows="3" style="font-size:12px;padding:5px 8px;resize:vertical"></textarea></div>
-          </div>
-          <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
-              <div>
-                <div class="sh" style="font-size:12px;margin-bottom:2px">Possible matches</div>
-                <div class="muted" style="font-size:11px">If this email looks like an update to an existing backend risk, link it instead of creating a duplicate.</div>
-              </div>
-              <div style="display:flex;gap:8px">
-                <button class="btn sm" onclick="findIngestRiskMatches()" id="en-risk-match-btn">Find matches ↗</button>
-                <button class="btn sm" onclick="clearIngestRiskLink()" id="en-risk-clear-link-btn">Create new instead</button>
-              </div>
-            </div>
-            <div id="en-risk-match-msg" class="muted" style="font-size:11px;margin-bottom:8px"></div>
-            <div id="en-risk-matches" style="display:flex;flex-direction:column;gap:8px"></div>
-          </div>
-          <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
-              <div>
-                <div class="sh" style="font-size:12px;margin-bottom:2px">Task drafts</div>
-                <div class="muted" style="font-size:11px">Built from AI suggested actions. Review them, then save them with the backend risk.</div>
-              </div>
-              <div style="display:flex;gap:8px">
-                <button class="btn sm" onclick="generateIngestTaskDrafts()" id="en-task-generate-btn">Generate tasks ↗</button>
-              </div>
-            </div>
-            <div id="en-task-msg" class="muted" style="font-size:11px;margin-bottom:8px"></div>
-            <div id="en-task-list" style="display:flex;flex-direction:column;gap:8px"></div>
-          </div>
-        </div>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn primary" onclick="saveEmailNote()">Save note to account ↗</button>
+      <div style="display:flex;gap:8px;margin-top:14px">
         <button class="btn" onclick="document.getElementById('email-result-card').style.display='none'">Discard</button>
       </div>
     </div>
