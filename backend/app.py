@@ -981,6 +981,15 @@ def log_event(conn, entity_type: str, entity_id: int, event_type: str, payload: 
         )
 
 
+def log_activity(entity_type: str, entity_id: int, event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    """Convenience wrapper — opens its own connection for logging outside a transaction."""
+    try:
+        with get_conn() as conn:
+            log_event(conn, entity_type, entity_id, event_type, payload)
+    except Exception:
+        logger.warning(f"log_activity failed for {entity_type}:{entity_id}:{event_type}")
+
+
 def get_risk_row(conn, risk_id: int) -> Optional[Dict[str, Any]]:
     """Fetch a single risk row with account/matter/entity names joined."""
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
@@ -4287,7 +4296,7 @@ def _mi_renewals_inner():
                        r.status, r.expiry_date, r.inception_date, r.currency, r.gross_premium,
                        r.estimated_gbp_commission, r.locked_gbp_commission,
                        e.name AS entity_name, pe.name AS producer_entity_name,
-                       EXTRACT(DAY FROM (r.expiry_date - CURRENT_DATE)) AS days_to_expiry
+                       (r.expiry_date - CURRENT_DATE) AS days_to_expiry
                 FROM risks r
                 LEFT JOIN entities e ON e.id = r.entity_id
                 LEFT JOIN entities pe ON pe.id = e.parent_id
