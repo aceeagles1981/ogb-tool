@@ -2180,6 +2180,74 @@ def create_entity_note(entity_id: int):
 
 
 # -----------------------------------------------------------------------------
+# P21: Company research via AI — saves as entity note
+# -----------------------------------------------------------------------------
+
+RESEARCH_SYSTEM = """You are a Lloyd's wholesale broker doing background research on a potential insured or producer.
+Research the company and return a concise intelligence report covering:
+1. What the company does (industry, products, operations)
+2. Size and scale (employees, revenue, locations if available)
+3. Key facts relevant to insurance (cargo volumes, storage, transport, commodities)
+4. Any red flags (sanctions, adverse news, financial distress)
+5. Registered country/jurisdiction
+
+Be factual and concise. Flag anything that would be relevant to underwriting.
+Return plain text, no markdown headers."""
+
+
+@app.post("/entities/<int:entity_id>/research")
+@require_admin
+@rate_limited("ai")
+def research_entity(entity_id: int):
+    """Run AI company research on an entity and save the result as a note."""
+    user_id = get_user_id_from_request()
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("SELECT id, name, entity_type, region FROM entities WHERE id = %s", (entity_id,))
+            entity = cur.fetchone()
+            if not entity:
+                return jsonify({"error": "Entity not found"}), 404
+
+    name = entity["name"]
+    region = entity.get("region") or ""
+    query = f"{name} {region}".strip()
+
+    try:
+        text = anthropic_text({
+            'model': 'claude-haiku-4-5-20251001',
+            'max_tokens': 800,
+            'system': RESEARCH_SYSTEM,
+            'messages': [{'role': 'user', 'content': f'Research this company for Lloyd\'s insurance underwriting purposes: {query}'}]
+        })
+    except Exception as e:
+        logger.exception("Company research failed")
+        return jsonify({"error": f"AI research failed: {str(e)}"}), 500
+
+    if not text:
+        return jsonify({"error": "No research results returned"}), 500
+
+    # Save as entity note
+    today = date.today().isoformat()
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                INSERT INTO entity_notes
+                    (entity_id, note_date, handler, parties, summary, actions, doc_type, source)
+                VALUES (%s, %s, 'AI', 'Web research', %s, '[]', 'general-correspondence', 'company-research')
+                RETURNING *
+            """, (entity_id, today, text[:2000]))
+            note = dict(cur.fetchone())
+            log_event(conn, "entity", entity_id, "company_research", {"query": query}, user_id)
+
+    return jsonify({
+        "research": text,
+        "note": serialise_entity_note(note),
+        "entity_name": name,
+    })
+
+
+# -----------------------------------------------------------------------------
 # Entity import (localStorage migration)
 # -----------------------------------------------------------------------------
 
@@ -2324,6 +2392,73 @@ def import_entities():
         log_event(conn, "entity", 0, "bulk_import", results, user_id)
 
     return jsonify({"ok": True, **results})
+
+
+# -----------------------------------------------------------------------------
+# P21: Duplicate entity detection
+# -----------------------------------------------------------------------------
+
+@app.get("/entities/duplicates")
+@require_admin
+@rate_limited("default_read")
+def find_duplicate_entities():
+    """Find potential duplicate entities using trigram similarity.
+    Returns pairs of entities with similar names, scored by similarity."""
+    threshold = float(request.args.get("threshold", 0.4))
+    entity_type = request.args.get("type", "").strip()
+    limit = min(int(request.args.get("limit", 50)), 200)
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            # Ensure pg_trgm extension (idempotent)
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+            except Exception:
+                pass  # might not have superuser — fall back to LIKE matching
+
+            type_filter = ""
+            params: list = []
+            if entity_type:
+                type_filter = "WHERE a.entity_type = %s AND b.entity_type = %s"
+                params = [entity_type, entity_type]
+
+            try:
+                # Try trigram similarity first (requires pg_trgm)
+                cur.execute(f"""
+                    SELECT
+                        a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
+                        b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
+                        similarity(LOWER(a.name), LOWER(b.name)) AS score
+                    FROM entities a
+                    JOIN entities b ON a.id < b.id
+                        AND a.entity_type = b.entity_type
+                        AND similarity(LOWER(a.name), LOWER(b.name)) >= %s
+                    {type_filter}
+                    ORDER BY similarity(LOWER(a.name), LOWER(b.name)) DESC
+                    LIMIT %s
+                """, params + [threshold, limit])
+            except Exception:
+                # Fallback: exact prefix match (first 5 chars)
+                cur.execute(f"""
+                    SELECT
+                        a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
+                        b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
+                        0.5 AS score
+                    FROM entities a
+                    JOIN entities b ON a.id < b.id
+                        AND a.entity_type = b.entity_type
+                        AND LOWER(LEFT(a.name, 5)) = LOWER(LEFT(b.name, 5))
+                        AND a.name != b.name
+                    {type_filter}
+                    ORDER BY a.name
+                    LIMIT %s
+                """, params + [limit])
+
+            pairs = [dict(r) for r in cur.fetchall()]
+            for p in pairs:
+                p["score"] = round(float(p["score"]), 3)
+
+    return jsonify({"duplicates": pairs, "count": len(pairs), "threshold": threshold})
 
 
 # -----------------------------------------------------------------------------
@@ -2973,6 +3108,404 @@ def market_scorecards():
     return jsonify({"scorecards": scorecards, "total": len(scorecards)})
 
 
+@app.get("/market/recommend")
+@require_admin
+@rate_limited("default_read")
+def market_recommend():
+    """P20: 'Who should I call?' — ranked underwriter recommendations for a product + territory.
+    Combines appetite (wrote_line history), efficiency (response speed, decisiveness),
+    relationship (favour balance), and hard-rule exclusions into a single ranked list."""
+    product = request.args.get("product", "").strip()
+    territory = request.args.get("territory", "").strip()
+    if not product and not territory:
+        return jsonify({"error": "Provide product or territory"}), 400
+
+    # 1. Get hard-rule exclusions
+    excluded = set()
+    rule_warnings = {}
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            rule_where = ["active = TRUE"]
+            rule_params = []
+            if product:
+                rule_where.append("(LOWER(product) LIKE %s OR product IS NULL OR product = '')")
+                rule_params.append(f"%{product.lower()}%")
+            if territory:
+                rule_where.append("(LOWER(territory) LIKE %s OR territory IS NULL OR territory = '')")
+                rule_params.append(f"%{territory.lower()}%")
+            cur.execute(f"""
+                SELECT underwriter, exclusion, notes FROM market_rules
+                WHERE {" AND ".join(rule_where)}
+            """, rule_params)
+            for r in cur.fetchall():
+                uw = r["underwriter"]
+                excluded.add(uw.lower())
+                rule_warnings[uw] = r.get("exclusion") or r.get("notes") or "Hard decline on file"
+
+    # 2. Get scorecards filtered by product/territory
+    where, params = [], []
+    if product:
+        where.append("LOWER(product) LIKE %s")
+        params.append(f"%{product.lower()}%")
+    if territory:
+        where.append("LOWER(territory) LIKE %s")
+        params.append(f"%{territory.lower()}%")
+    where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(f"""
+                SELECT
+                    underwriter,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN interaction_type = 'wrote_line' THEN 1 ELSE 0 END) AS wrote,
+                    SUM(CASE WHEN interaction_type = 'declined' THEN 1 ELSE 0 END) AS declined,
+                    SUM(CASE WHEN interaction_type = 'ghosted' THEN 1 ELSE 0 END) AS ghosted,
+                    AVG(line_pct) FILTER (WHERE line_pct IS NOT NULL AND interaction_type = 'wrote_line') AS avg_line,
+                    AVG(response_speed_hours) FILTER (WHERE response_speed_hours IS NOT NULL) AS avg_speed,
+                    SUM(CASE WHEN decisiveness = 'decisive' THEN 1 ELSE 0 END) AS decisive,
+                    SUM(CASE WHEN favour_tag = 'favour_owed' THEN 1 ELSE 0 END) -
+                    SUM(CASE WHEN favour_tag = 'favour_given' THEN 1 ELSE 0 END) AS favour_bal,
+                    MAX(interaction_date) AS last_seen,
+                    ARRAY_AGG(DISTINCT contact_name) FILTER (WHERE contact_name IS NOT NULL) AS contacts
+                FROM market_interactions
+                {where_clause}
+                GROUP BY underwriter
+                ORDER BY SUM(CASE WHEN interaction_type = 'wrote_line' THEN 1 ELSE 0 END) DESC
+            """, params)
+            rows = [dict(r) for r in cur.fetchall()]
+
+    # 3. Score and rank
+    recommendations = []
+    for row in rows:
+        uw = row["underwriter"]
+        if uw.lower() in excluded:
+            continue  # skip hard-declined underwriters
+
+        wrote = int(row.get("wrote") or 0)
+        declined = int(row.get("declined") or 0)
+        ghosted = int(row.get("ghosted") or 0)
+        total = int(row.get("total") or 0)
+        decisive = int(row.get("decisive") or 0)
+        favour = int(row.get("favour_bal") or 0)
+        avg_line = float(row["avg_line"]) if row.get("avg_line") else None
+        avg_speed = float(row["avg_speed"]) if row.get("avg_speed") else None
+
+        # Appetite score (0-40): wrote_line rate, penalise declines
+        decided = wrote + declined + ghosted
+        appetite = round(wrote / decided * 40, 1) if decided > 0 else 20  # neutral if no data
+
+        # Efficiency score (0-30): fast response + decisive
+        speed_score = 0
+        if avg_speed is not None:
+            speed_score = max(0, min(15, 15 - avg_speed / 4))  # 0h=15, 60h=0
+        decisive_score = round(decisive / total * 15, 1) if total > 0 else 7.5
+        efficiency = round(speed_score + decisive_score, 1)
+
+        # Relationship score (0-30): favour balance + recency
+        favour_score = min(15, max(-5, favour * 5))  # +5 per favour owed to us, cap at 15
+        recency_score = 10  # default
+        if row.get("last_seen"):
+            days_ago = (import_date_today() - row["last_seen"]).days if hasattr(row["last_seen"], "days") else 90
+            recency_score = max(0, min(15, 15 - days_ago / 30))
+        relationship = round(max(0, favour_score + recency_score), 1)
+
+        composite = round(appetite + efficiency + relationship, 1)
+
+        recommendations.append({
+            "underwriter": uw,
+            "score": composite,
+            "appetite_score": appetite,
+            "efficiency_score": efficiency,
+            "relationship_score": relationship,
+            "wrote_line": wrote,
+            "declined": declined,
+            "avg_line_pct": round(avg_line, 1) if avg_line else None,
+            "avg_response_hours": round(avg_speed, 1) if avg_speed else None,
+            "favour_balance": favour,
+            "contacts": row.get("contacts") or [],
+            "last_interaction": str(row["last_seen"]) if row.get("last_seen") else None,
+            "reason": _recommend_reason(wrote, declined, avg_speed, favour, decisive, total)
+        })
+
+    recommendations.sort(key=lambda x: x["score"], reverse=True)
+
+    return jsonify({
+        "recommendations": recommendations,
+        "excluded": [{"underwriter": k, "reason": v} for k, v in rule_warnings.items()],
+        "product": product,
+        "territory": territory,
+    })
+
+
+def import_date_today():
+    """Return today as a date object."""
+    from datetime import date
+    return date.today()
+
+
+def _recommend_reason(wrote, declined, avg_speed, favour, decisive, total):
+    """Generate a human-readable recommendation reason."""
+    parts = []
+    if wrote > 0:
+        parts.append(f"wrote {wrote} line{'s' if wrote > 1 else ''}")
+    if declined == 0 and wrote > 0:
+        parts.append("never declined")
+    if avg_speed is not None and avg_speed < 24:
+        parts.append("fast responder")
+    if favour > 0:
+        parts.append(f"owes us {favour} favour{'s' if favour > 1 else ''}")
+    if decisive > 0 and total > 0 and decisive / total > 0.7:
+        parts.append("decisive")
+    if not parts:
+        parts.append("limited data")
+    return "; ".join(parts)
+
+
+# =============================================================================
+# P8 (Part 21): Bulk seed market_interactions + rules
+# =============================================================================
+
+@app.post("/market/seed")
+@require_admin
+@rate_limited("default_write")
+def market_seed():
+    """Bulk-insert market interactions and rules. Idempotent — skips duplicates by underwriter+risk_id+interaction_type+interaction_date."""
+    payload = request.get_json(force=True, silent=True) or {}
+    interactions = payload.get("interactions") or []
+    rules = payload.get("rules") or []
+    user_id = get_user_id_from_request()
+
+    inserted_interactions = 0
+    skipped_interactions = 0
+    inserted_rules = 0
+    skipped_rules = 0
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            for item in interactions:
+                uw = (item.get("underwriter") or "").strip()
+                if not uw:
+                    continue
+                itype = item.get("interaction_type", "approached")
+                idate = item.get("interaction_date")
+                risk_id = parse_int_safe(item.get("risk_id"))
+
+                # Dedupe check
+                cur.execute("""
+                    SELECT id FROM market_interactions
+                    WHERE LOWER(underwriter) = LOWER(%s)
+                      AND interaction_type = %s
+                      AND (interaction_date = %s OR (%s IS NULL AND interaction_date IS NULL))
+                      AND (risk_id = %s OR (%s IS NULL AND risk_id IS NULL))
+                    LIMIT 1
+                """, (uw, itype, idate, idate, risk_id, risk_id))
+                if cur.fetchone():
+                    skipped_interactions += 1
+                    continue
+
+                cur.execute("""
+                    INSERT INTO market_interactions
+                        (risk_id, entity_id, underwriter, contact_name, syndicate,
+                         interaction_type, product, territory,
+                         line_pct, premium_indication, rate_indication,
+                         conditions, decline_reason, decline_type,
+                         appetite_signals, response_speed_hours, decisiveness,
+                         favour_tag, source, interaction_date, notes)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                """, (
+                    risk_id,
+                    parse_int_safe(item.get("entity_id")),
+                    uw,
+                    item.get("contact_name"),
+                    item.get("syndicate"),
+                    itype,
+                    item.get("product"),
+                    item.get("territory"),
+                    parse_decimal(item.get("line_pct")),
+                    parse_decimal(item.get("premium_indication")),
+                    parse_decimal(item.get("rate_indication")),
+                    json.dumps(item.get("conditions") or []),
+                    item.get("decline_reason"),
+                    item.get("decline_type"),
+                    json.dumps(item.get("appetite_signals") or {}),
+                    parse_decimal(item.get("response_speed_hours")),
+                    item.get("decisiveness"),
+                    item.get("favour_tag"),
+                    item.get("source", "seed"),
+                    idate,
+                    item.get("notes"),
+                ))
+                inserted_interactions += 1
+
+            for rule in rules:
+                uw = (rule.get("underwriter") or "").strip()
+                excl = (rule.get("exclusion") or "").strip()
+                if not uw or not excl:
+                    continue
+
+                # Dedupe check
+                cur.execute("""
+                    SELECT id FROM market_rules
+                    WHERE LOWER(underwriter) = LOWER(%s) AND LOWER(exclusion) = LOWER(%s)
+                    LIMIT 1
+                """, (uw, excl))
+                if cur.fetchone():
+                    skipped_rules += 1
+                    continue
+
+                cur.execute("""
+                    INSERT INTO market_rules (underwriter, syndicate, rule_type, product, territory, exclusion, notes)
+                    VALUES (%s, %s, 'hard_decline', %s, %s, %s, %s)
+                """, (
+                    uw, rule.get("syndicate"), rule.get("product"), rule.get("territory"),
+                    excl, rule.get("notes"),
+                ))
+                inserted_rules += 1
+
+    return jsonify({
+        "inserted_interactions": inserted_interactions,
+        "skipped_interactions": skipped_interactions,
+        "inserted_rules": inserted_rules,
+        "skipped_rules": skipped_rules,
+    }), 201
+
+
+# =============================================================================
+# P8 (Part 21): Auto-extract market feedback from emails
+# =============================================================================
+
+MARKET_FEEDBACK_SYSTEM = """You are a Lloyd's of London marine cargo insurance broker reading an email from or about an underwriter.
+Extract structured market feedback from this email. The email may contain:
+- An underwriter indicating/quoting terms
+- An underwriter declining a risk (hard rule or soft pass)
+- An underwriter writing a line (binding)
+- Multiple underwriters mentioned in a market update
+- A broker summarising market responses
+
+For EACH underwriter mentioned, extract:
+- underwriter: company name (e.g. "Aviva", "Brit", "CNA Hardy")
+- contact_name: individual underwriter name if mentioned
+- syndicate: Lloyd's syndicate number if mentioned (e.g. "2121", "382")
+- interaction_type: "indicated" | "quoted" | "wrote_line" | "declined" | "ghosted" | "approached"
+- line_pct: percentage of placement if stated (e.g. 17.5 for 17.5%)
+- premium_indication: premium figure if stated
+- rate_indication: rate if stated (as decimal: 0.20% = 0.0020)
+- conditions: array of conditions/subjectivities ["survey required", "NatCat sublimited"]
+- decline_reason: reason for decline if applicable
+- decline_type: "hard_rule" | "soft_pass" | "no_response" | null
+- appetite_signals: {"willing_product": "STP", "unwilling": "excess stock"} or {}
+- response_speed_hours: estimated hours to respond if inferable
+- decisiveness: "decisive" | "slow_but_clear" | "non_committal" | "ghosted"
+- notes: any other relevant context
+
+Respond ONLY with JSON:
+{"market_feedback": [{ ... one object per underwriter ... }]}
+
+If the email contains NO market feedback, return: {"market_feedback": []}
+"""
+
+
+@app.post("/market/extract-feedback")
+@require_admin
+@rate_limited("default_write")
+def extract_market_feedback():
+    """AI-extract market feedback from an email body and auto-create interactions."""
+    payload = request.get_json(force=True, silent=True) or {}
+    email_body = (payload.get("email_body") or "").strip()
+    risk_id = parse_int_safe(payload.get("risk_id"))
+    entity_id = parse_int_safe(payload.get("entity_id"))
+    email_date = payload.get("email_date")
+    product = payload.get("product")
+    territory = payload.get("territory")
+    source_email_id = parse_int_safe(payload.get("source_email_id"))
+    user_id = get_user_id_from_request()
+
+    if not email_body:
+        return jsonify({"error": "email_body required"}), 400
+
+    # Call AI to extract feedback
+    try:
+        raw = anthropic_text({
+            'model': 'claude-haiku-4-5-20251001',
+            'max_tokens': 2000,
+            'system': MARKET_FEEDBACK_SYSTEM,
+            'messages': [{'role': 'user', 'content': email_body[:8000]}]
+        })
+        result = extract_json_object(raw)
+    except Exception as e:
+        logger.exception("Market feedback extraction failed")
+        return jsonify({"error": f"AI extraction failed: {str(e)}"}), 500
+
+    feedback_items = result.get("market_feedback") or []
+    if not feedback_items:
+        return jsonify({"extracted": 0, "interactions": []}), 200
+
+    created = []
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            for fb in feedback_items:
+                uw = (fb.get("underwriter") or "").strip()
+                if not uw:
+                    continue
+
+                cur.execute("""
+                    INSERT INTO market_interactions
+                        (risk_id, entity_id, underwriter, contact_name, syndicate,
+                         interaction_type, product, territory,
+                         line_pct, premium_indication, rate_indication,
+                         conditions, decline_reason, decline_type,
+                         appetite_signals, response_speed_hours, decisiveness,
+                         favour_tag, source, source_email_id, interaction_date, notes)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING *
+                """, (
+                    risk_id,
+                    entity_id,
+                    uw,
+                    fb.get("contact_name"),
+                    fb.get("syndicate"),
+                    fb.get("interaction_type", "approached"),
+                    product or fb.get("product"),
+                    territory or fb.get("territory"),
+                    parse_decimal(fb.get("line_pct")),
+                    parse_decimal(fb.get("premium_indication")),
+                    parse_decimal(fb.get("rate_indication")),
+                    json.dumps(fb.get("conditions") or []),
+                    fb.get("decline_reason"),
+                    fb.get("decline_type"),
+                    json.dumps(fb.get("appetite_signals") or {}),
+                    parse_decimal(fb.get("response_speed_hours")),
+                    fb.get("decisiveness"),
+                    None,  # favour_tag — manual only
+                    "auto_extracted",
+                    source_email_id,
+                    email_date,
+                    fb.get("notes"),
+                ))
+                row = cur.fetchone()
+                created.append(serialise_interaction(dict(row)))
+
+                # Auto-create rule if hard decline
+                if fb.get("decline_type") == "hard_rule" and fb.get("decline_reason"):
+                    cur.execute("""
+                        INSERT INTO market_rules (underwriter, syndicate, rule_type, product, territory, exclusion, source_interaction_id, notes)
+                        VALUES (%s, %s, 'hard_decline', %s, %s, %s, %s, %s)
+                    """, (
+                        uw, fb.get("syndicate"),
+                        product or fb.get("product"), territory or fb.get("territory"),
+                        fb.get("decline_reason"), row["id"],
+                        f"Auto-extracted from email on {email_date or 'unknown date'}",
+                    ))
+
+                log_event(conn, "market", row["id"], "interaction_auto_extracted", {
+                    "underwriter": uw, "type": fb.get("interaction_type")
+                }, user_id)
+
+    return jsonify({"extracted": len(created), "interactions": created}), 201
+
+
 # =============================================================================
 # P7: Term Correction Learning — diff ai_extracted vs live risk fields
 # =============================================================================
@@ -3211,6 +3744,15 @@ def mi_summary():
             """)
             task_summary = dict(cur.fetchone())
 
+            # Entity counts (P20)
+            cur.execute("""
+                SELECT
+                    SUM(CASE WHEN entity_type = 'insured' THEN 1 ELSE 0 END) AS insured_count,
+                    SUM(CASE WHEN entity_type = 'producer' THEN 1 ELSE 0 END) AS producer_count
+                FROM entities
+            """)
+            entity_counts = dict(cur.fetchone())
+
     # Conversion rate
     bound = int(totals.get("bound_cnt") or 0)
     pipeline = int(totals.get("pipeline_cnt") or 0)
@@ -3238,6 +3780,7 @@ def mi_summary():
         "totals": totals,
         "conversion_rate": conversion_rate,
         "task_summary": task_summary,
+        "entity_counts": entity_counts,
     })
 
 

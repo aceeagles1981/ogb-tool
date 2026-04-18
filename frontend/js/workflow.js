@@ -854,6 +854,19 @@ async function wfSaveAll() {
       } catch(tickErr) { console.warn('Auto-tick skipped:', tickErr); }
     }
 
+    // P21: Auto-extract market feedback if email classified as feedback/indication/quote
+    if (riskId && outputs.email_classification) {
+      var classType = (outputs.email_classification.type || '').toLowerCase().replace(/\s+/g, '_');
+      var feedbackTypes = ['feedback','indication','market_update','quote_response'];
+      if (feedbackTypes.indexOf(classType) !== -1 || classType.indexOf('feedback') !== -1) {
+        var emailBody = _workflowResult.email_parse ? (_workflowResult.email_parse.body || _workflowResult.email_parse.cleaned || '') : '';
+        var emailDate = _workflowResult.email_parse ? (_workflowResult.email_parse.date || '').slice(0, 10) : '';
+        if (emailBody && typeof autoExtractMarketFeedback === 'function') {
+          autoExtractMarketFeedback(riskId, emailBody, emailDate, risk.product || '', risk.region || '', null);
+        }
+      }
+    }
+
     // Update button to show success
     if (btn) { btn.textContent = '✓ Saved'; btn.style.background = '#059669'; }
     setTimeout(function() {

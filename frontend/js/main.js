@@ -2581,6 +2581,7 @@ async function openEntityCard(entityId) {
           '</div>' +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:8px">' +
+          '<button class="btn sm" onclick="researchCompany(' + entityId + ')">🔍 Research</button>' +
           '<button class="btn sm" onclick="editEntityPrompt(' + entityId + ')">Edit</button>' +
           '<button class="btn" onclick="document.getElementById(\'ent-card\').style.display=\'none\'">Close</button>' +
         '</div>' +
@@ -4299,10 +4300,9 @@ function renderEntities(){
 }
 
 function entOpenCard(insId){
-  // P19: Route to PG entity card first, fall back to localStorage
+  // P19/P21: Route to PG entity card. Legacy localStorage fallback removed in Part 21.
   var asNum = Number(insId);
   if (Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0) {
-    // Already a PG integer ID
     openEntityCard(asNum);
     return;
   }
@@ -4310,7 +4310,6 @@ function entOpenCard(insId){
   var ent = entGetState();
   var ins = ent.insureds ? ent.insureds.find(function(i){ return i.id === insId; }) : null;
   if (ins) {
-    // Try to find matching PG entity by name
     fetchEntityList({ type: 'insured', q: ins.name, limit: 5 }).then(function(matches) {
       var exact = matches.find(function(m) { return m.name.toLowerCase().trim() === ins.name.toLowerCase().trim(); });
       if (exact) {
@@ -4318,424 +4317,23 @@ function entOpenCard(insId){
       } else if (matches.length) {
         openEntityCard(matches[0].id);
       } else {
-        // No PG match — fall back to legacy
-        _legacyEntOpenCard(insId);
+        showNotice('Entity "' + ins.name + '" not found in database. Use Accounts panel to create it.', 'warn');
       }
     }).catch(function() {
-      _legacyEntOpenCard(insId);
+      showNotice('Could not look up entity. Check connection.', 'err');
     });
   } else {
     handleMissingLocalInsured(insId, 'view');
   }
 }
 
-function _legacyEntOpenCard(insId){
-  const ent=entGetState();
-  const ins=ent.insureds.find(i=>i.id===insId);
-  if(!ins) { handleMissingLocalInsured(insId, 'view'); return; }
-  const prod=ent.producers.find(p=>p.id===ins.producerId);
-
-  const statusBadge=entStatusBadge;
-  const fmtNum=v=>v&&v!=='0'?Number(v).toLocaleString():'—';
-
-  // Enquiries timeline
-  let enqHtml='';
-  if(ins.enquiries&&ins.enquiries.length){
-    [...ins.enquiries].reverse().forEach(e=>{
-      const isB=e.status==='Bound';
-      enqHtml+=`<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;background:${isB?'var(--ok-bg)':'var(--surface)'}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-          <div>
-            <div style="font-size:12px;font-weight:500">Inception: ${e.inceptionDate||'—'} <span class="muted">· Enquiry: ${e.enquiryDate||'—'}</span></div>
-            <div style="font-size:11px;color:var(--text2);margin-top:2px">Handler: ${e.handler||'—'} · ${e.newRenewal||'—'} · ${e.currency||''} ${fmtNum(e.premium)} · Comm: ${fmtNum(e.commission)}</div>
-          </div>
-          <div style="text-align:right">
-            ${statusBadge(e.status||'')}
-            ${e.quoteLeader?`<div style="font-size:10px;color:var(--text2);margin-top:3px">Lead: ${e.quoteLeader}</div>`:''}
-            ${e.cedant?`<div style="font-size:10px;color:var(--text2)">Cedant: ${e.cedant}</div>`:''}
-            ${e.compliance ? `<div style="margin-top:4px"><span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:${{'pass':'var(--ok-bg)','review':'var(--warn-bg)','decline':'var(--err-bg)'}[e.compliance.result]||'var(--gray-bg)'};color:${{'pass':'var(--ok)','review':'var(--warn)','decline':'var(--err)'}[e.compliance.result]||'var(--text3)'}">
-              ${{'pass':'✓ Compliance PASS','review':'⚠ Compliance REVIEW','decline':'✕ Compliance DECLINE'}[e.compliance.result]||''}
-            </span></div>` : ''}
-            <div style="margin-top:6px">
-              <button onclick="pbOpenCompliance('${insId}','${e.id}')" style="font-size:10px;padding:2px 8px;border-radius:4px;background:var(--err-bg);color:var(--err);border:1px solid var(--err)30;cursor:pointer;font-weight:600">
-                ${e.compliance ? '⚖ Review compliance' : '⚖ Pre-bind check'}
-              </button>
-            </div>
-          </div>
-        </div>
-        ${e.notes?`<div style="font-size:11px;color:var(--text);line-height:1.6;background:var(--bg);padding:7px 10px;border-radius:5px">${e.notes}</div>`:''}
-        ${isB?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-          <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:6px">POST-BIND CHECKLIST</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${['eoc','openingMemo','imageRight','eclipse','invoiced','sharepoint','gfr'].map(k=>{
-              const done=e.postBind&&e.postBind[k];
-              const labels={eoc:'EOC',openingMemo:'Opening Memo',imageRight:'ImageRight',eclipse:'Eclipse',invoiced:'Invoiced',sharepoint:'SharePoint',gfr:'GFR'};
-              return `<span onclick="entTogglePostBind('${insId}','${e.id}','${k}')" style="cursor:pointer;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:${done?'var(--ok-bg)':'var(--gray-bg)'};color:${done?'var(--ok)':'var(--text2)'}">${done?'✓':'○'} ${labels[k]}</span>`;
-            }).join('')}
-          </div>
-        </div>`:''}
-      </div>`;
-    });
-  } else { enqHtml='<div class="muted">No enquiries recorded.</div>'; }
-
-  // Notes timeline (from email ingest)
-  let emailHtml='';
-  const notes = [...(ins.notes || [])].sort((a, b) => {
-    const da = parseDate(a.date), db = parseDate(b.date);
-    if (!da && !db) return 0;
-    if (!da) return 1;
-    if (!db) return -1;
-    return db - da;
-  });
-
-  const DOC_TYPE_LABELS = {
-    'terms-indication':      {label:'Terms indication',   colour:'#C97800'},
-    'terms-clarification':   {label:'Terms clarification',colour:'#C97800'},
-    'quote-slip':            {label:'Quote slip',         colour:'#1A6FBF'},
-    'client-quotation':      {label:'Client quotation',   colour:'#1A6FBF'},
-    'firm-order':            {label:'Firm order',         colour:'#1A8A3A'},
-    'binding-confirmation':  {label:'Binding confirmation',colour:'#1A8A3A'},
-    'commission-advice':     {label:'Commission advice',  colour:'#6B3FA0'},
-    'closing-docs':          {label:'Closing docs',       colour:'#6B3FA0'},
-    'general-correspondence':{label:'',                   colour:''}
-  };
-
-  const CRITICAL_TYPES = new Set(['terms-indication','terms-clarification','quote-slip',
-    'client-quotation','firm-order','binding-confirmation','commission-advice','closing-docs']);
-
-  if(notes.length){
-    notes.forEach(n=>{
-      const actHtml=n.actions&&n.actions.length
-        ?`<div style="margin-top:5px">${n.actions.map(a=>`<div style="font-size:11px;color:var(--acc)">→ ${a}</div>`).join('')}</div>`:'';
-      const scHtml=n.statusChange
-        ?`<span class="badge b-cond" style="font-size:10px;margin-left:6px">${n.statusChange}</span>`:'';
-
-      // Doc type badge
-      const dt = n.docType||'general-correspondence';
-      const dtInfo = DOC_TYPE_LABELS[dt]||{label:'',colour:''};
-      const dtBadge = dtInfo.label
-        ?`<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;background:${dtInfo.colour}18;color:${dtInfo.colour};border:1px solid ${dtInfo.colour}40;margin-left:6px">${dtInfo.label}</span>`:'';
-
-      // Terms block — only for critical doc types with actual data
-      let termsHtml = '';
-      const t = n.terms||{};
-      const isCritical = CRITICAL_TYPES.has(dt);
-      const hasTerms = isCritical && (t.market||t.premium||t.policyRef||t.brokerage||t.conditions||t.limit||t.deductible);
-      if(hasTerms){
-        const row = (label, val) => val ? `<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px solid ${dtInfo.colour}18">
-          <div style="width:100px;flex-shrink:0;font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase;padding-top:1px">${label}</div>
-          <div style="font-size:12px">${val}</div>
-        </div>` : '';
-        const premStr = t.premium ? `${t.currency||''} ${Number(t.premium).toLocaleString()}`.trim() : '';
-        const bkgStr = t.brokerage ? t.brokerage+'%' : '';
-        termsHtml = `<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:${dtInfo.colour}08;border:1px solid ${dtInfo.colour}30">
-          ${row('Market', t.market)}
-          ${row('Line', t.line)}
-          ${row('Premium', premStr)}
-          ${row('Brokerage', bkgStr)}
-          ${row('Limit', t.limit)}
-          ${row('Deductible', t.deductible)}
-          ${row('Policy ref', t.policyRef)}
-          ${row('Wording', t.wording)}
-          ${row('Basis', t.basis)}
-          ${row('Conditions', t.conditions)}
-        </div>`;
-      }
-
-      const dotColour = isCritical && dtInfo.colour ? dtInfo.colour : 'var(--acc)';
-      emailHtml+=`<div class="tl">
-        <div class="tl-d">${n.date||''}</div>
-        <div class="tl-dot" style="background:${dotColour}"></div>
-        <div style="flex:1">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div style="font-size:12px;font-weight:500">${n.handler||'—'} · ${n.parties||''}${scHtml}${dtBadge}</div>
-            <button onclick="deleteNote('${ins.id}','${n.id}')" title="Delete this note"
-              style="border:none;background:none;cursor:pointer;color:var(--text3);font-size:11px;padding:0 2px;flex-shrink:0;line-height:1">✕</button>
-          </div>
-          <div style="font-size:12px;margin-top:3px;line-height:1.6">${n.summary||''}</div>
-          ${termsHtml}
-          ${actHtml}
-        </div>
-      </div>`;
-    });
-  } else {
-    emailHtml='<div class="muted" style="font-size:12px">No notes yet. Drop .msg files in the Ingest tab to generate notes.</div>';
-  }
-
-  // Documents section
-  let docsHtml = '';
-  const docs = [...(ins.documents||[])].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-  if(docs.length){
-    const DOC_ICONS = {'quote-slip':'📋','firm-order':'✅','endorsement':'📝','debit-note':'💷','closing-slip':'🔏'};
-    docsHtml = docs.map(d=>`
-      <div style="border:1px solid var(--border);border-radius:6px;margin-bottom:8px;overflow:hidden">
-        <div style="background:var(--bg);padding:7px 12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer"
-             onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-          <div>
-            <span style="font-size:13px">${DOC_ICONS[d.type]||'📄'}</span>
-            <span style="font-size:12px;font-weight:600;margin-left:6px">${d.title||d.type||'Document'}</span>
-            <span class="muted" style="font-size:11px;margin-left:8px">${d.date||''}</span>
-          </div>
-          <span class="muted" style="font-size:11px">▾ expand</span>
-        </div>
-        <div style="display:none;padding:10px 12px;font-size:12px;line-height:1.7;white-space:pre-wrap;font-family:monospace;background:var(--surface);border-top:1px solid var(--border)">${d.content||''}</div>
-      </div>`).join('');
-  }
-
-  // Loss record section
-  let lossHtml = '';
-  const lossRec = [...(ins.lossRecord||[])].sort((a,b)=>(b.year||'').localeCompare(a.year||''));
-  if(lossRec.length){
-    lossHtml = `<table style="width:100%;font-size:12px">
-      <tr><th>Year</th><th>Paid</th><th>Outstanding</th><th>Currency</th><th>Notes</th></tr>
-      ${lossRec.map(r=>`<tr>
-        <td>${r.year||'—'}</td>
-        <td>${r.paid!=null?Number(r.paid).toLocaleString():'—'}</td>
-        <td>${r.outstanding!=null?Number(r.outstanding).toLocaleString():'—'}</td>
-        <td>${r.currency||'—'}</td>
-        <td class="muted">${r.notes||''}</td>
-      </tr>`).join('')}
-    </table>`;
-  }
-
-  // Placing structure
-  let slipHtml = '';
-  // Check for structured placement data on any enquiry
-  const placedEnq = ins.enquiries.find(e => e.placement && e.placement.layers);
-  if(placedEnq){
-    const pl = placedEnq.placement;
-    const fmtM = v => v >= 1 ? v.toLocaleString() + 'M' : v;
-    const fmtN = v => v ? Number(v).toLocaleString() : '—';
-    slipHtml += `<div style="background:var(--acc-bg);border:0.5px solid #B5D4F4;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:11px">
-      <div style="font-weight:600;color:var(--acc);margin-bottom:2px">${pl.type||''}</div>
-      <div class="muted">${pl.period||''} · ${pl.currency} ${fmtN(pl.totalPremium)} gross · ${pl.overseasBroker||''}</div>
-    </div>`;
-    pl.layers.forEach((layer, li) => {
-      const netPct = (100 - layer.brokerage).toFixed(1);
-      slipHtml += `<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden">
-        <div style="background:var(--bg);padding:8px 12px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
-          <div>
-            <div style="font-size:12px;font-weight:600">Layer ${li+1}: ${layer.description}</div>
-            <div style="font-size:11px;color:var(--text2);margin-top:1px">Cedant: ${layer.cedant} · Lead: ${layer.slipLeader} · UMR: ${layer.umr}</div>
-          </div>
-          <div style="text-align:right;font-size:11px">
-            <div style="font-weight:600;color:var(--acc)">${layer.currency||pl.currency} ${fmtN(layer.grossPremium)} gross</div>
-            <div class="muted">${layer.brokerage}% bkg · ${layer.currency||pl.currency} ${fmtN(layer.netPremium)} net</div>
-          </div>
-        </div>
-        <div style="overflow-x:auto">
-          <table style="width:100%;font-size:11px;border-collapse:collapse">
-            <tr style="background:var(--bg)">
-              <th style="text-align:left;padding:4px 10px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)">Market</th>
-              <th style="text-align:left;padding:4px 8px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)">Syndicate</th>
-              <th style="text-align:right;padding:4px 8px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)">Written</th>
-              <th style="text-align:right;padding:4px 8px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)">Signed</th>
-              <th style="text-align:right;padding:4px 10px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)">Gross prem</th>
-              <th style="text-align:right;padding:4px 10px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)">Net prem</th>
-            </tr>
-            ${layer.markets.map(m => {
-              const grossShare = Math.round(layer.grossPremium * m.signed / 100);
-              const netShare = Math.round(grossShare * (1 - layer.brokerage/100));
-              return `<tr style="border-bottom:0.5px solid var(--border)">
-                <td style="padding:4px 10px;font-weight:500">${m.name}</td>
-                <td style="padding:4px 8px;color:var(--text2)">${m.syndicate}</td>
-                <td style="padding:4px 8px;text-align:right">${m.written.toFixed(2)}%</td>
-                <td style="padding:4px 8px;text-align:right;color:${m.written!==m.signed?'var(--warn)':'var(--text)'}">${m.signed.toFixed(2)}%</td>
-                <td style="padding:4px 10px;text-align:right">${(layer.currency||pl.currency)} ${grossShare.toLocaleString()}</td>
-                <td style="padding:4px 10px;text-align:right;color:var(--ok)">${(layer.currency||pl.currency)} ${netShare.toLocaleString()}</td>
-              </tr>`;
-            }).join('')}
-            <tr style="background:var(--bg);font-weight:600">
-              <td colspan="2" style="padding:5px 10px;font-size:11px">TOTAL (signed to 100%)</td>
-              <td style="padding:5px 8px;text-align:right">${layer.markets.reduce((s,m)=>s+m.written,0).toFixed(2)}%</td>
-              <td style="padding:5px 8px;text-align:right">100.00%</td>
-              <td style="padding:5px 10px;text-align:right">${layer.currency||pl.currency} ${fmtN(layer.grossPremium)}</td>
-              <td style="padding:5px 10px;text-align:right;color:var(--ok)">${layer.currency||pl.currency} ${fmtN(layer.netPremium)}</td>
-            </tr>
-          </table>
-        </div>
-      </div>`;
-    });
-    // Programme totals
-    const totalNet = pl.layers.reduce((s,l)=>s+l.netPremium,0);
-    slipHtml += `<div style="padding:10px 14px;background:var(--ok-bg);border-radius:8px;display:flex;justify-content:space-between;font-size:12px;font-weight:600">
-      <span>Programme total — ${pl.layers.length} layers</span>
-      <span>${pl.currency} ${fmtN(pl.totalPremium)} gross · ${pl.currency} ${fmtN(totalNet)} net</span>
-    </div>`;
-  } else if(ins.slips&&ins.slips.length){
-    ins.slips.forEach(sl=>{
-      slipHtml+=`<div class="tl"><div class="tl-d">${sl.date||''}</div><div class="tl-dot" style="background:var(--ok)"></div><div><div style="font-weight:500">${sl.filename||'Slip'}</div><div class="muted">${sl.cedant?'Cedant: '+sl.cedant:''}</div></div></div>`;
-    });
-  } else { slipHtml='<div class="muted" style="font-size:12px">No placing structure recorded yet.</div>'; }
-
-  document.getElementById('ent-card-inner').innerHTML=`
-    <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-      <div>
-        <div style="font-size:16px;font-weight:600">${ins.name}</div>
-        <div class="muted" style="margin-top:3px">Producer: ${prod?.name||ins.producerId} · Region: ${ins.region||'—'} · ${ins.enquiries.length} enquir${ins.enquiries.length===1?'y':'ies'}</div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn" onclick="entCloseCard()">✕ Close</button>
-        <button class="btn sm" id="research-btn-${ins.id}" onclick="researchCompany('${ins.id}')">
-          ${ins.companyBackground ? '✓ Research on file' : '🔍 Research company'}
-        </button>
-        <button class="btn sm" id="verify-name-btn-${ins.id}" onclick="verifyLegalName('${ins.id}')" title="Check registered legal name online">
-          ${ins.legalNameVerified ? '✓ Name verified' : '⚖ Verify legal name'}
-        </button>
-        <button class="btn sm" onclick="deleteInsured('${ins.id}')" style="color:var(--err);border-color:var(--err)40">🗑 Delete</button>
-      </div>
-    </div>
-    ${ins.companyBackground ? `<div style="padding:10px 20px;background:#F0F7FF;border-bottom:1px solid var(--border);font-size:11px;color:var(--text2)">
-      <span style="font-weight:600;color:var(--acc)">Company intelligence</span> · Researched ${ins.companyBackground.researched||''}
-      <div style="margin-top:4px;line-height:1.6;white-space:pre-wrap">${(ins.companyBackground.text||'').slice(0,600)}${ins.companyBackground.text&&ins.companyBackground.text.length>600?'…':''}</div>
-    </div>` : ''}
-    <div id="name-verify-panel-${ins.id}" style="display:none;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--warn-bg)"></div>
-    <div style="display:flex;gap:0;padding:0 20px;border-bottom:1px solid var(--border);background:var(--bg)">
-      <button class="ptab active" id="ect-tab-overview" onclick="entCardTab('overview','${ins.id}')">Overview</button>
-      <button class="ptab" id="ect-tab-timeline" onclick="entCardTab('timeline','${ins.id}')">360 Timeline</button>
-      <button class="ptab" id="ect-tab-docs" onclick="entCardTab('docs','${ins.id}')">Docs & Slips</button>
-    </div>
-    <div style="padding:16px 20px">
-      <div id="ect-overview">
-        <div class="sh" style="margin-bottom:10px">Enquiry history</div>
-        ${enqHtml}
-        ${lossRec.length ? `<div class="sh" style="margin-bottom:10px;margin-top:16px">Loss record</div>${lossHtml}` : ''}
-        <div class="sh" style="margin-bottom:10px;margin-top:16px">Correspondence notes <span class="muted">(${(ins.notes||[]).length})</span></div>
-        ${emailHtml}
-      </div>
-      <div id="ect-timeline" style="display:none">
-        <div id="ect-timeline-inner"></div>
-      </div>
-      <div id="ect-docs" style="display:none">
-        ${docs.length ? `<div class="sh" style="margin-bottom:10px">Documents issued <span class="muted">(${docs.length})</span></div>${docsHtml}` : '<p class="muted">No documents on file.</p>'}
-        <div class="sh" style="margin-bottom:10px;margin-top:16px">Placing structure</div>
-        ${slipHtml}
-      </div>
-    </div>`;
-
-  document.getElementById('ent-card').style.display='block';
-  document.body.style.overflow='hidden';
-}
-
-
-// ─── ENTITY CARD TABS + 360 TIMELINE ─────────────────────────────────────────
-
-function entCardTab(tab, insId){
-  ['overview','timeline','docs'].forEach(function(t){
-    var el  = document.getElementById('ect-'+t);
-    var btn = document.getElementById('ect-tab-'+t);
-    if(el)  el.style.display  = t===tab ? 'block' : 'none';
-    if(btn) btn.classList.toggle('active', t===tab);
-  });
-  if(tab==='timeline') renderEntityTimeline(insId);
-}
-
-function renderEntityTimeline(insId){
-  var el = document.getElementById('ect-timeline-inner');
-  if(!el) return;
-
-  var ent = entGetState();
-  var ins = (ent.insureds||[]).find(function(i){ return i.id===insId; });
-  if(!ins){ el.innerHTML='<p class="muted">Account not found.</p>'; return; }
-
-  var events = [];
-
-  // ── Enquiries ──
-  (ins.enquiries||[]).forEach(function(enq){
-    if(enq.enquiryDate){
-      events.push({ date:enq.enquiryDate, type:'enquiry', icon:'📥',
-        col:'var(--acc)', bg:'var(--acc-bg)',
-        title:'Enquiry opened',
-        detail:enq.newRenewal+' · Handler: '+(enq.handler||'—')+' · Inception: '+(enq.inceptionDate||'TBC') });
-    }
-    if(enq.status==='Bound' && enq.inceptionDate){
-      events.push({ date:enq.inceptionDate, type:'bound', icon:'✅',
-        col:'var(--ok)', bg:'var(--ok-bg)',
-        title:'Risk bound',
-        detail:(enq.currency||'')+' '+(enq.premium?Number(enq.premium).toLocaleString():'—')+' · Lead: '+(enq.quoteLeader||'—') });
-    }
-    if(enq.compliance && enq.compliance.date){
-      var rmap = {pass:'✓ Compliance PASS',review:'⚠ Compliance REVIEW',decline:'✕ Compliance DECLINE'};
-      var cmap = {pass:'var(--ok)',review:'var(--warn)',decline:'var(--err)'};
-      events.push({ date:enq.compliance.date, type:'compliance', icon:'⚖',
-        col:cmap[enq.compliance.result]||'var(--text2)',
-        bg:enq.compliance.result==='pass'?'var(--ok-bg)':enq.compliance.result==='decline'?'var(--err-bg)':'var(--warn-bg)',
-        title:rmap[enq.compliance.result]||'Compliance check',
-        detail:'Handler: '+(enq.compliance.handler||'—')+(enq.compliance.notes?' · '+enq.compliance.notes.slice(0,80):'') });
-    }
-    // Post-bind milestones
-    var pb = enq.postBind||{};
-    var pbLabels = {eoc:'EOC issued',openingMemo:'Opening memo',imageRight:'ImageRight',eclipse:'Eclipse',invoiced:'Invoiced',sharepoint:'SharePoint',gfr:'GFR'};
-    Object.keys(pbLabels).forEach(function(k){
-      if(pb[k] && typeof pb[k]==='string' && pb[k].match(/\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}/)){
-        events.push({ date:pb[k], type:'admin', icon:'📋',
-          col:'var(--text2)', bg:'var(--gray-bg)',
-          title:pbLabels[k], detail:'Post-bind admin' });
-      }
-    });
-  });
-
-  // ── Notes / Correspondence ──
-  (ins.notes||[]).forEach(function(n){
-    var dtypeIcons = {'general-correspondence':'✉','client-quotation':'💬','firm-order':'✅','claims-advice':'⚠','endorsement':'📝','debit-note':'💷'};
-    events.push({ date:n.date||'', type:'note', icon:dtypeIcons[n.docType]||'📝',
-      col:'var(--text)', bg:'var(--surface)',
-      title:(n.docType||'note').replace(/-/g,' ').replace(/\b\w/g,function(c){ return c.toUpperCase(); }),
-      detail:(n.summary||'').slice(0,120)+(n.handler?' · Handler: '+n.handler:'')
-        +(n.actions&&n.actions.length?' · Actions: '+n.actions.slice(0,2).join('; '):'') });
-  });
-
-  // ── Slips ──
-  (ins.slips||[]).forEach(function(sl){
-    events.push({ date:sl.date||'', type:'slip', icon:'📄',
-      col:'var(--purple)', bg:'var(--purple-bg)',
-      title:'Slip: '+(sl.type||sl.ref||'—'),
-      detail:sl.markets||sl.ref||'' });
-  });
-
-  // ── Sort chronologically, newest first ──
-  events = events.filter(function(e){ return e.date; });
-  events.sort(function(a,b){
-    var da = parseDate(a.date), db = parseDate(b.date);
-    if(!da&&!db) return 0; if(!da) return 1; if(!db) return -1;
-    return db-da;
-  });
-
-  if(!events.length){
-    el.innerHTML='<p class="muted" style="padding:12px 0">No events recorded yet. Notes, enquiry dates, and post-bind milestones will appear here as you add them.</p>';
-    return;
-  }
-
-  el.innerHTML = '<div style="position:relative;padding-left:28px">'
-    +'<div style="position:absolute;left:8px;top:0;bottom:0;width:2px;background:var(--border)"></div>'
-    +events.map(function(ev){
-      return '<div style="position:relative;margin-bottom:14px">'
-        +'<div style="position:absolute;left:-24px;top:2px;width:18px;height:18px;border-radius:50%;background:'+ev.bg+';border:2px solid '+ev.col+';display:flex;align-items:center;justify-content:center;font-size:9px">'+ev.icon+'</div>'
-        +'<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 12px;border-left:3px solid '+ev.col+'">'
-        +'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'
-        +'<div style="font-size:12px;font-weight:600;color:'+ev.col+'">'+ev.title+'</div>'
-        +'<div style="font-size:10px;color:var(--text3);white-space:nowrap">'+ev.date+'</div>'
-        +'</div>'
-        +(ev.detail?'<div style="font-size:11px;color:var(--text2);margin-top:3px;line-height:1.5">'+ev.detail+'</div>':'')
-        +'</div></div>';
-    }).join('')
-    +'</div>';
-}
+// P21: Legacy entity card functions removed (_legacyEntOpenCard, entCardTab,
+// renderEntityTimeline, entTogglePostBind). All 151 entities are in PG.
+// PG entity card (openEntityCard) is the only path.
 
 function entCloseCard(){
   document.getElementById('ent-card').style.display='none';
   document.body.style.overflow='';
-}
-
-function entTogglePostBind(insId,enqId,field){
-  const ent=entGetState();
-  const ins=ent.insureds.find(i=>i.id===insId);
-  if(!ins) { handleMissingLocalInsured(insId, 'toggle post-bind field'); return; }
-  const enq=ins.enquiries.find(e=>e.id===enqId);
-  if(!enq||!enq.postBind) return;
-  enq.postBind[field]=enq.postBind[field]?'':'DONE';
-  entSave(ent);
-  entOpenCard(insId); // re-render card
 }
 
 // Close card on backdrop click (wrapped in DOMContentLoaded per Build Rule 6)
@@ -4772,235 +4370,15 @@ function ingestMode(mode){
 })();
 
 // ─── HOME SCREEN INGEST ───────────────────────────────────────────────────────
+// Removed in Part 20: hiFile, hiDrop, hiSave, hiPopulateEnquiry, hiReset, _hiNoteData
+// Home page now redirects to ingest/workflow panel.
+// Stubs for any residual callers:
 var _hiNoteData = null;
-
-function hiDrop(e){
-  e.preventDefault();
-  var files = e.dataTransfer.files;
-  if(files && files.length) hiFile(files);
-}
-
-async function hiFile(files){
-  if(!files||!files.length) return;
-  var dz      = document.getElementById('hi-dz');
-  var proc    = document.getElementById('hi-processing');
-  var procMsg = document.getElementById('hi-proc-msg');
-  var result  = document.getElementById('hi-result');
-  var saved   = document.getElementById('hi-saved');
-  var label   = document.getElementById('hi-dz-label');
-
-  saved.style.display = 'none';
-  result.style.display = 'none';
-  proc.style.display = 'block';
-  label.textContent = files[0].name;
-
-  var ent = entGetState();
-  var insuredList = ent.insureds.map(function(i){ return {id:i.id, name:i.name}; });
-
-  try {
-    procMsg.textContent = 'Parsing ' + files[0].name + '...';
-    var fd = new FormData();
-    fd.append('file', files[0]);
-    fd.append('insureds', JSON.stringify(insuredList));
-    procMsg.textContent = 'Generating account note...';
-    var res = await fetch(BACKEND + '/ingest-email', {method:'POST', body:fd, headers: authHeaders()});
-    var data = await res.json();
-    if(data.error){ proc.style.display='none'; showNotice('Error: '+data.error,'err'); return; }
-
-    _hiNoteData = data;
-    var note = data.note||{};
-    var match = data.match||{};
-
-    // Populate fields
-    var g = function(id){ return document.getElementById(id); };
-    if(g('hi-date'))    g('hi-date').value    = note.date||data.date||'';
-    if(g('hi-handler')) g('hi-handler').value = note.handler||'';
-    if(g('hi-parties')) g('hi-parties').value = note.parties||data.sender||'';
-    if(g('hi-summary')) g('hi-summary').value = note.summary||'';
-    if(g('hi-actions')) g('hi-actions').value = (note.actions||[]).join('\n');
-    if(g('hi-status'))  g('hi-status').value  = note.statusChange||'';
-
-    // Match badge
-    var confCol = {high:'var(--ok)',medium:'var(--warn)',low:'var(--err)'}[match.confidence]||'var(--text2)';
-    var mb = g('hi-match-badge');
-    if(mb) mb.innerHTML = match.matched_name
-      ? '<div style="padding:7px 10px;border-radius:6px;background:var(--bg);border:1px solid var(--border);font-size:12px"><span style="color:'+confCol+';font-weight:600">'+(match.confidence==='high'?'✓':match.confidence==='medium'?'~':'?')+' '+match.confidence+'</span> — matched to <strong>'+match.matched_name+'</strong><br><span class="muted">'+( match.reason||'')+'</span></div>'
-      : '<div class="notice warn" style="margin:0">No automatic match — please select account below.</div>';
-
-
-    // Auto-compliance on high-confidence match
-    if(match.confidence==='high' && match.matched_id) {
-      var hiMatchedIns = ent.insureds.find(function(i){ return i.id===match.matched_id; });
-      var hiMatchedEnq = hiMatchedIns && hiMatchedIns.enquiries && hiMatchedIns.enquiries[hiMatchedIns.enquiries.length-1];
-      if(hiMatchedEnq) {
-        autoComplianceScreen(match.matched_id, hiMatchedEnq.id).then(function(r){
-          if(!r) return;
-          var mbEl = document.getElementById('hi-match-badge');
-          if(mbEl) mbEl.innerHTML = (mbEl.innerHTML||'') + r.bannerHtml;
-        });
-      }
-    }
-    // Populate insured select from PG entities
-    var sel = g('hi-insured-select');
-    if(sel){
-      sel.innerHTML = '<option value="">— select insured —</option>';
-      try {
-        var pgEntities = await fetchEntityList({ type: 'insured', limit: 500 });
-        pgEntities.sort(function(a,b){ return a.name.localeCompare(b.name); });
-        var pgMatchId = data.entity_match ? data.entity_match.id : null;
-        pgEntities.forEach(function(e){
-          var o = document.createElement('option');
-          o.value = e.id; o.textContent = e.name;
-          o.setAttribute('data-pg-id', e.id);
-          if(pgMatchId && e.id === pgMatchId) o.selected = true;
-          sel.appendChild(o);
-        });
-        // Also try to pre-select from localStorage match if no PG match
-        if(!pgMatchId && match.matched_id) {
-          var lsIns = ent.insureds ? ent.insureds.find(function(i){ return i.id === match.matched_id; }) : null;
-          if(lsIns) {
-            var lsMatch = pgEntities.find(function(e){ return e.name.toLowerCase().trim() === lsIns.name.toLowerCase().trim(); });
-            if(lsMatch) {
-              sel.value = String(lsMatch.id);
-              pgMatchId = lsMatch.id;
-            }
-          }
-        }
-      } catch(e) {
-        // Fallback to localStorage if PG fetch fails
-        var sorted = [...(ent.insureds||[])].sort(function(a,b){ return a.name.localeCompare(b.name); });
-        sorted.forEach(function(i){
-          var o = document.createElement('option');
-          o.value = i.id; o.textContent = i.name;
-          if(i.id === match.matched_id) o.selected = true;
-          sel.appendChild(o);
-        });
-      }
-      hiPopulateEnquiry(match.matched_id||'');
-    }
-
-
-    // Auto-save high-confidence match — home ingest (Chat 12 · #3)
-    if(match.confidence==='high' && match.matched_id) {
-      var hiAsEnt = entGetState();
-      var hiAsIns = hiAsEnt.insureds.find(function(i){ return i.id===match.matched_id; });
-      if(hiAsIns) {
-        var hiAsNote = {
-          id: 'note-'+Date.now(),
-          date: note.date||data.date||'',
-          handler: note.handler||'',
-          parties: note.parties||data.sender||'',
-          summary: note.summary||'',
-          actions: note.actions||[],
-          statusChange: note.statusChange||'',
-          enquiryId: hiAsIns.enquiries.length ? hiAsIns.enquiries[hiAsIns.enquiries.length-1].id : '',
-          docType: (note.docType)||'general-correspondence',
-          terms: (note.terms)||{},
-          source: 'ingest-auto'
-        };
-        if(!hiAsIns.notes) hiAsIns.notes = [];
-        if(!isDuplicateNote(hiAsIns, hiAsNote)) {
-          hiAsIns.notes.push(hiAsNote);
-          if(_hiNoteData && _hiNoteData.contacts && _hiNoteData.contacts.length) upsertContacts(_hiNoteData.contacts, hiAsIns.name);
-          entSave(hiAsEnt);
-        }
-        proc.style.display = 'none';
-        saved.textContent = '✓ Auto-saved to ' + hiAsIns.name + (hiAsNote.statusChange ? ' · Status: '+hiAsNote.statusChange : '');
-        saved.style.display = 'block';
-        document.getElementById('hi-drop-area').style.display = 'block';
-        document.getElementById('hi-dz-label').textContent = 'Drop .msg file here';
-        document.getElementById('hi-fi').value = '';
-        _hiNoteData = null;
-        setTimeout(function(){ saved.style.display='none'; }, 5000);
-        renderHomeUpload();
-        return;
-      }
-    }
-
-    proc.style.display = 'none';
-    result.style.display = 'block';
-  } catch(e){
-    proc.style.display = 'none';
-    showNotice('Failed: '+e.message, 'err');
-  }
-}
-
-function hiPopulateEnquiry(insId){
-  var ent = entGetState();
-  var ins = ent.insureds.find(function(i){ return i.id===insId; });
-  var sel = document.getElementById('hi-enquiry-select');
-  if(!sel) return;
-  sel.innerHTML = '<option value="">— select —</option>';
-  if(!ins) { handleMissingLocalInsured(insId, 'list enquiries'); return; }
-  [...ins.enquiries].reverse().forEach(function(e){
-    var o = document.createElement('option');
-    o.value = e.id;
-    o.textContent = (e.inceptionDate||'No date')+' · '+(e.status||'—')+' · '+(e.newRenewal||'');
-    sel.appendChild(o);
-  });
-  if(ins.enquiries.length) sel.value = ins.enquiries[ins.enquiries.length-1].id;
-}
-
-function hiSave(){
-  var insId = document.getElementById('hi-insured-select').value;
-  var enqId = document.getElementById('hi-enquiry-select').value;
-  if(!insId){ showNotice('Select an insured first','err'); return; }
-  var ent = entGetState();
-  var ins = ent.insureds.find(function(i){ return i.id===insId; });
-  if(!ins){ showNotice('Insured not found','err'); return; }
-
-  var actRaw = document.getElementById('hi-actions').value.trim();
-  var note = {
-    id: 'note-'+Date.now(),
-    date:         document.getElementById('hi-date').value.trim(),
-    handler:      document.getElementById('hi-handler').value.trim(),
-    parties:      document.getElementById('hi-parties').value.trim(),
-    summary:      document.getElementById('hi-summary').value.trim(),
-    actions:      actRaw ? actRaw.split('\n').map(function(s){ return s.trim(); }).filter(Boolean) : [],
-    statusChange: document.getElementById('hi-status').value.trim(),
-    enquiryId:    enqId||'',
-    docType:      (_hiNoteData&&_hiNoteData.note&&_hiNoteData.note.docType)||'general-correspondence',
-    terms:        (_hiNoteData&&_hiNoteData.note&&_hiNoteData.note.terms)||{}
-  };
-
-  if(!ins.notes) ins.notes = [];
-  if(isDuplicateNote(ins, note)){ showNotice('Duplicate note detected','err'); return; }
-  ins.notes.push(note);
-
-  if(note.statusChange && enqId){
-    var enq = ins.enquiries.find(function(e){ return e.id===enqId; });
-    if(enq){
-      var parts = note.statusChange.split(/[→>]|\s+to\s+/i);
-      if(parts.length === 2) enq.status = parts[1].trim();
-    }
-  }
-
-  if(typeof autoTickPostBind === 'function') autoTickPostBind(ent, ins, note);
-  entSave(ent);
-
-  if(_hiNoteData && _hiNoteData.contacts && _hiNoteData.contacts.length){
-    upsertContacts(_hiNoteData.contacts, ins.name);
-  }
-
-  var saved = document.getElementById('hi-saved');
-  saved.textContent = '✓ Note saved to ' + ins.name + (note.statusChange ? ' · Status: '+note.statusChange : '');
-  saved.style.display = 'block';
-  document.getElementById('hi-result').style.display = 'none';
-  document.getElementById('hi-drop-area').style.display = 'block';
-  document.getElementById('hi-dz-label').textContent = 'Drop .msg file here';
-  document.getElementById('hi-fi').value = '';
-  _hiNoteData = null;
-  setTimeout(function(){ saved.style.display='none'; }, 5000);
-  renderHomeUpload();
-}
-
-function hiReset(){
-  document.getElementById('hi-result').style.display = 'none';
-  document.getElementById('hi-saved').style.display = 'none';
-  document.getElementById('hi-dz-label').textContent = 'Drop .msg file here';
-  document.getElementById('hi-fi').value = '';
-  _hiNoteData = null;
-}
+function hiDrop(e){ e.preventDefault(); tab('ingest'); }
+function hiFile(){ tab('ingest'); }
+function hiSave(){ tab('ingest'); }
+function hiReset(){}
+function hiPopulateEnquiry(){}
 
 async function handleEmailFile(files){
   if(!files||!files.length) return;
@@ -5014,8 +4392,15 @@ async function handleEmailFile(files){
   savedNotice.style.display='none';
   proc.style.display='block';
   document.getElementById('email-proc-msg').textContent='Parsing email...';
-  const ent = entGetState();
-  const insuredList = ent.insureds.map(i=>({id:i.id,name:i.name}));
+  // P20: Fetch insured list from PG, localStorage fallback
+  var insuredList = [];
+  try {
+    var pgEnts = await fetchEntityList({ type: 'insured', limit: 500 });
+    insuredList = pgEnts.map(function(e){ return {id:e.id, name:e.name}; });
+  } catch(e) {
+    var ent = entGetState();
+    insuredList = (ent.insureds||[]).map(function(i){ return {id:i.id, name:i.name}; });
+  }
   try{
     const fd = new FormData();
     fd.append('file', file);
@@ -5035,69 +4420,6 @@ async function handleEmailFile(files){
     document.getElementById('en-summary').value = note.summary||'';
     document.getElementById('en-actions').value = (note.actions||[]).join('\n');
     document.getElementById('en-status').value = note.statusChange||'';
-    // Legacy form-filling (fillIngestRiskDraft, en-insured-select, en-match-badge,
-    // populateEnquirySelect, single-new-name) removed Part 17 — workflow card replaces.
-    // Auto-compliance on high-confidence match
-    if(match.confidence==='high' && match.matched_id) {
-      var hfMatchedIns = ent.insureds.find(function(i){ return i.id===match.matched_id; });
-      var hfMatchedEnq = hfMatchedIns && hfMatchedIns.enquiries && hfMatchedIns.enquiries[hfMatchedIns.enquiries.length-1];
-      if(hfMatchedEnq) {
-        autoComplianceScreen(match.matched_id, hfMatchedEnq.id).then(function(r){
-          if(!r) return;
-          var badgeEl = document.getElementById('en-match-badge');
-          if(badgeEl) badgeEl.innerHTML = (badgeEl.innerHTML||'') + r.bannerHtml;
-        });
-      }
-    }
-    // Legacy insured-select population removed Part 17 (DOM elements removed)
-
-    // Auto-save high-confidence match (Chat 12 · #3)
-    if(match.confidence==='high' && match.matched_id) {
-      var asEnt = entGetState();
-      var asIns = asEnt.insureds.find(function(i){ return i.id===match.matched_id; });
-      if(asIns) {
-        var asNote = {
-          id: 'note-'+Date.now(),
-          date: note.date||data.date||'',
-          handler: note.handler||'',
-          parties: note.parties||data.sender||'',
-          summary: note.summary||'',
-          actions: note.actions||[],
-          statusChange: note.statusChange||'',
-          enquiryId: asIns.enquiries.length ? asIns.enquiries[asIns.enquiries.length-1].id : '',
-          docType: (note.docType)||'general-correspondence',
-          terms: (note.terms)||{},
-          source: 'ingest-auto'
-        };
-        if(!asIns.notes) asIns.notes = [];
-        if(!isDuplicateNote(asIns, asNote)) {
-          asIns.notes.push(asNote);
-          if(note.document && note.document.content) {
-            if(!asIns.documents) asIns.documents = [];
-            asIns.documents.push({id:'doc-'+Date.now(),date:asNote.date,type:note.document.type||'',title:note.document.title||'',content:note.document.content,source:'ingest-auto'});
-          }
-          if(note.lossRecord && note.lossRecord.length) {
-            if(!asIns.lossRecord) asIns.lossRecord = [];
-            note.lossRecord.forEach(function(lr){ if(!asIns.lossRecord.some(function(x){ return x.year===lr.year; })) asIns.lossRecord.push(lr); });
-          }
-          if(note.statusChange && asNote.enquiryId) {
-            var asEnq = asIns.enquiries.find(function(e){ return e.id===asNote.enquiryId; });
-            if(asEnq) { var asParts = note.statusChange.split(/→|to|->/i); if(asParts.length===2) asEnq.status = asParts[1].trim(); }
-          }
-          entSave(asEnt);
-          if(data.contacts && data.contacts.length) upsertContacts(data.contacts, asIns.name);
-        }
-        proc.style.display='none';
-        dz.classList.remove('loaded');
-        document.getElementById('dz-email-label').textContent='Drop .msg file here';
-        document.getElementById('fi-email').value='';
-        savedNotice.textContent='✓ Auto-saved to '+asIns.name+(asNote.statusChange?' · Status: '+asNote.statusChange:'');
-        savedNotice.style.display='block';
-        setTimeout(function(){savedNotice.style.display='none';},5000);
-        renderHomeUpload&&renderHomeUpload();
-        return;
-      }
-    }
 
     dz.classList.add('loaded');
     document.getElementById('dz-email-label').textContent=file.name;
@@ -5153,177 +4475,164 @@ function calcRevenueForecast(){
   } catch(e) { return { ytd: 0, projected: 0, monthsElapsed: 1 }; }
 }
 
-function renderHomeTileStats(){
-  const s = gs();
-  const ent = entGetState();
-  // Greeting
+async function renderHomeTileStats(){
+  // Greeting (local, no API needed)
   const h = new Date().getHours();
   const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const el = document.getElementById('home-greeting');
   if(el) el.textContent = greet + ' · ' + days[new Date().getDay()] + ', ' + new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
-  // Pipeline stat
-  const ps = Object.values(s.placements||{});
-  const active = ps.filter(p=>!['bound','ntu'].includes(p.status));
-  const pEl = document.getElementById('home-stat-pipeline');
-  if(pEl) pEl.textContent = active.length + ' active · ' + ps.filter(p=>p.actions&&p.actions.some(a=>!a.done)).length + ' actions pending';
-  // Entities stat
-  const eEl = document.getElementById('home-stat-entities');
-  if(eEl) eEl.textContent = (ent.insureds||[]).length + ' insureds · ' + (ent.producers||[]).length + ' producers';
-  // Contacts stat
+
+  // Contacts stat (still localStorage — not migrated yet)
+  const s = gs();
   const cEl = document.getElementById('home-stat-contacts');
   if(cEl) cEl.textContent = (s.contacts||[]).length + ' contacts';
-  // Renewals stat
-  const upcoming = getRenewalList(90);
-  const urgent = upcoming.filter(r=>r.daysUntil<=30).length;
-  const rEl = document.getElementById('home-stat-renewals');
-  if(rEl) rEl.textContent = upcoming.length + ' renewing · ' + urgent + ' urgent';
-  // Hero stats — live 2026 YTD GWP
-  // Source 1: bookRows with gbpComm set for 2026
-  const boundAccounts = (ent.insureds||[]).filter(i=>(i.enquiries||[]).some(e=>e.status==='Bound')).length;
-  var s2026 = gs();
-  var ytdRows = (s2026.bookRows||[]).filter(function(r){ return r.accountingYear==='2026' && r.gbpComm!=null; });
-  var ytdGbp = ytdRows.reduce(function(acc,r){ return acc+(r.gbpComm||0); }, 0);
-  // Source 2: entities with Bound 2026 enquiries that have commission set,
-  // not already represented in bookRows (match by name prefix)
-  var bookNames = new Set(ytdRows.map(function(r){ return (r.displayName||r.assured||'').toLowerCase().slice(0,14); }));
-  (ent.insureds||[]).forEach(function(ins){
-    (ins.enquiries||[]).forEach(function(enq){
-      if(enq.status !== 'Bound') return;
-      var parts = (enq.inceptionDate||'').split('/');
-      if(parts.length !== 3 || parts[2].trim() !== '2026') return;
-      var comm = parseFloat(enq.commission)||0;
-      if(comm <= 0) return;
-      var key = ins.name.toLowerCase().slice(0,14);
-      if(bookNames.has(key)) return; // already in bookRows
-      // Rough GBP conversion: USD/EUR ~0.79, CAD ~0.58, others ~0.79
-      var ccy = (enq.currency||'GBP').toUpperCase();
-      var fx = ccy==='GBP'?1 : ccy==='EUR'?0.84 : ccy==='CAD'?0.58 : 0.79;
-      ytdGbp += Math.round(comm * fx);
-      bookNames.add(key);
-    });
-  });
-  var ytdLabel = ytdGbp >= 1000000
-    ? '£' + (Math.round(ytdGbp/10000)/100).toFixed(2) + 'M'
-    : ytdGbp > 0
-    ? '£' + Math.round(ytdGbp/1000) + 'k'
-    : '—';
-  ['hs-gwp','hs-active','hs-renew','hs-accounts'].forEach((id,i)=>{
-    const vals = [ytdLabel, active.length, upcoming.length, boundAccounts];
-    const el2 = document.getElementById(id); if(el2) el2.textContent = vals[i];
-  });
-  // Forecast stat
-  var fcData = calcRevenueForecast();
-  var fcStatEl = document.getElementById('hs-forecast');
-  if(fcStatEl) fcStatEl.textContent = fcData.projected ? '~£'+Math.round(fcData.projected/1000)+'k' : '—';
-  renderHomeTasks();
-  renderHomeUpload();
-  // Revenue forecast
-  var fc = calcRevenueForecast();
+
+  // Fetch PG data for hero stats
+  try {
+    var summary = await apiFetch('/mi/summary');
+    var renewals = await apiFetch('/mi/renewals');
+
+    // Pipeline stat
+    var pipelineCount = parseInt(summary.totals.pipeline_cnt) || 0;
+    var taskOpen = parseInt(summary.task_summary.total_open) || 0;
+    var pEl = document.getElementById('home-stat-pipeline');
+    if(pEl) pEl.textContent = pipelineCount + ' active · ' + taskOpen + ' tasks open';
+
+    // Entities stat
+    var insCount = parseInt(summary.entity_counts.insured_count) || 0;
+    var prodCount = parseInt(summary.entity_counts.producer_count) || 0;
+    var eEl = document.getElementById('home-stat-entities');
+    if(eEl) eEl.textContent = insCount + ' insureds · ' + prodCount + ' producers';
+
+    // Renewals stat
+    var renewing = (renewals.upcoming || []).length;
+    var urgent = renewals.within_30 || 0;
+    var rEl = document.getElementById('home-stat-renewals');
+    if(rEl) rEl.textContent = renewing + ' renewing · ' + urgent + ' urgent';
+
+    // Hero stats — from PG
+    var boundCount = parseInt(summary.totals.bound_cnt) || 0;
+    // YTD GWP: find current year in by_year
+    var currentYear = String(new Date().getFullYear());
+    var yearRow = (summary.by_year || []).find(function(r){ return r.accounting_year === currentYear; });
+    var ytdComm = yearRow ? (yearRow.locked_comm || yearRow.est_comm || 0) : 0;
+    // Also add bookRows GBP comm for current year (localStorage book data)
+    var ytdBookRows = (s.bookRows||[]).filter(function(r){ return r.accountingYear === currentYear && r.gbpComm != null; });
+    var ytdBook = ytdBookRows.reduce(function(acc,r){ return acc + (r.gbpComm||0); }, 0);
+    var ytdGbp = Math.max(ytdComm, ytdBook); // take the higher — PG should grow to be primary
+    var ytdLabel = ytdGbp >= 1000000
+      ? '£' + (Math.round(ytdGbp/10000)/100).toFixed(2) + 'M'
+      : ytdGbp > 0
+      ? '£' + Math.round(ytdGbp/1000) + 'k'
+      : '—';
+    var hsGwp = document.getElementById('hs-gwp');
+    var hsActive = document.getElementById('hs-active');
+    var hsRenew = document.getElementById('hs-renew');
+    var hsAccounts = document.getElementById('hs-accounts');
+    if(hsGwp) hsGwp.textContent = ytdLabel;
+    if(hsActive) hsActive.textContent = pipelineCount;
+    if(hsRenew) hsRenew.textContent = renewing;
+    if(hsAccounts) hsAccounts.textContent = boundCount;
+
+    // Forecast stat
+    var fcData = calcRevenueForecast();
+    var fcStatEl = document.getElementById('hs-forecast');
+    if(fcStatEl) fcStatEl.textContent = fcData.projected ? '~£'+Math.round(fcData.projected/1000)+'k' : '—';
+
+    // Render tasks and upload prompts (now PG-backed)
+    renderHomeTasks(summary);
+    renderHomeUpload();
+
+  } catch(e) {
+    console.warn('Home stats PG fetch failed, falling back:', e.message);
+    // Minimal fallback — show what we can from localStorage
+    var fcData = calcRevenueForecast();
+    var fcStatEl = document.getElementById('hs-forecast');
+    if(fcStatEl) fcStatEl.textContent = fcData.projected ? '~£'+Math.round(fcData.projected/1000)+'k' : '—';
+    renderHomeTasks();
+    renderHomeUpload();
+  }
 }
 
 
 
 // ─── HOME UPLOAD TASKS ────────────────────────────────────────────────────────
 
-function findDuplicateEntities(){
-  var ent = entGetState();
-  var insureds = ent.insureds || [];
-  var results = [];
-  for(var i = 0; i < insureds.length; i++){
-    for(var j = i + 1; j < insureds.length; j++){
-      var a = (insureds[i].name||'').toLowerCase().replace(/[^a-z0-9\s]/g,'').trim();
-      var b = (insureds[j].name||'').toLowerCase().replace(/[^a-z0-9\s]/g,'').trim();
-      if(!a || !b) continue;
-      var sim = 0;
-      if(a === b) sim = 100;
-      else if(a.indexOf(b) > -1 || b.indexOf(a) > -1) sim = 90;
-      else {
-        var at = a.split(/\s+/), bt = b.split(/\s+/);
-        var inter = at.filter(function(w){ return bt.indexOf(w) > -1; }).length;
-        var union = new Set(at.concat(bt)).size || 1;
-        sim = Math.round(inter / union * 100);
-      }
-      if(sim >= 70) results.push({ aName: insureds[i], bName: insureds[j], similarity: sim });
-    }
+async function findDuplicateEntities(){
+  // P21: Uses PG trigram similarity via /entities/duplicates
+  try {
+    var data = await apiFetch('/entities/duplicates?threshold=0.4&limit=20');
+    return (data.duplicates || []).map(function(d) {
+      return {
+        type: 'duplicate_entity',
+        priority: d.score >= 0.7 ? 'high' : 'medium',
+        title: 'Possible duplicate: ' + d.name_a + ' / ' + d.name_b,
+        detail: d.type_a + ' · similarity ' + Math.round(d.score * 100) + '%',
+        id_a: d.id_a,
+        id_b: d.id_b
+      };
+    });
+  } catch(e) {
+    console.warn('Duplicate check skipped:', e.message);
+    return [];
   }
-  return results;
 }
 
-function renderHomeUpload(){
+async function renderHomeUpload(){
   var el = document.getElementById('home-upload-inner');
   if(!el) return;
 
-  var ent = entGetState();
-  var today = new Date(); today.setHours(0,0,0,0);
   var items = [];
 
-  function daysAgo(dateStr){
-    var d = parseDate(dateStr); if(!d) return null;
-    return Math.round((today - d) / 86400000);
+  try {
+    // Check bound risks for post-bind gaps
+    var boundData = await apiFetch('/risks?status=bound&limit=200');
+    var bound = boundData.items || [];
+    bound.forEach(function(r) {
+      var name = r.entity_name || r.assured_name || r.display_name || 'Unknown';
+      // No compliance screening
+      var comp = r.ai_extracted && r.ai_extracted.compliance;
+      if (!comp || !comp.result) {
+        items.push({priority:'warn', icon:'\u2696', label:'Compliance screen not run', detail: name + ' — run from risk card', nav:'pipeline', riskId: r.id});
+      }
+      // Post-bind gaps
+      if (!r.pb_evidence_of_cover) {
+        items.push({priority:'warn', icon:'\ud83d\udccb', label:'EOC not issued', detail: name, nav:'renewals', riskId: r.id});
+      }
+      if (!r.pb_subjectivities_cleared) {
+        items.push({priority:'err', icon:'\u26a0', label:'Subjectivities not cleared', detail: name + ' — E&O risk', nav:'renewals', riskId: r.id});
+      }
+      if (!r.pb_invoice_sent) {
+        items.push({priority:'warn', icon:'\ud83d\udce8', label:'Invoice not sent', detail: name, nav:'renewals', riskId: r.id});
+      }
+      if (!r.pb_closings_sent && !r.direct_accounting) {
+        items.push({priority:'warn', icon:'\ud83d\udce6', label:'Closings not sent', detail: name, nav:'renewals', riskId: r.id});
+      }
+    });
+
+    // Check for risks without handler
+    var allData = await apiFetch('/risks?limit=200');
+    var allRisks = allData.items || [];
+    allRisks.forEach(function(r) {
+      if (['submission','in_market','quoted'].indexOf(r.status) > -1 && !r.handler) {
+        var name = r.entity_name || r.assured_name || r.display_name || 'Unknown';
+        items.push({priority:'warn', icon:'\ud83d\udc64', label:'No handler assigned', detail: name + ' (' + r.status + ')', nav:'pipeline', riskId: r.id});
+      }
+    });
+
+  } catch(e) {
+    console.warn('renderHomeUpload PG fetch failed:', e.message);
   }
 
-  (ent.insureds||[]).forEach(function(ins){
-    var prod = (ent.producers||[]).find(function(p){ return p.id===ins.producerId; });
-    var prodName = prod ? prod.name : '—';
-    var notes = ins.notes||[];
-    var docs = ins.documents||[];
-
-    (ins.enquiries||[]).forEach(function(enq){
-      var status = enq.status||'';
-      var isBound = status === 'Bound';
-      var isActive = ['Quoted','AW Submission','Submission','In market','Renewal pending'].includes(status);
-      var age = daysAgo(enq.enquiryDate);
-
-      if(isBound){
-        if(!notes.length){
-          items.push({priority:'err',icon:'📭',label:'No correspondence on file',detail:ins.name+' — '+prodName+' · Bound '+( enq.inceptionDate||''),nav:'entities'});
-        }
-        if(!docs.length){
-          items.push({priority:'warn',icon:'📄',label:'No documents uploaded',detail:ins.name+' — closing slip, debit note, EOC',nav:'entities'});
-        }
-        if(!enq.policyRef && !enq.quoteLeader){
-          items.push({priority:'warn',icon:'🔖',label:'Policy reference missing',detail:ins.name+' — add UMR or policy ref to enquiry',nav:'entities'});
-        }
-        if(!enq.compliance || !enq.compliance.result){
-          items.push({priority:'warn',icon:'⚖',label:'Compliance check not recorded',detail:ins.name+' — pre-bind compliance screen not run',nav:'entities'});
-        }
-        var pb = enq.postBind||{};
-        if(!pb.eoc){
-          items.push({priority:'warn',icon:'📋',label:'EOC not issued',detail:ins.name+' — mark complete when issued',nav:'renewals'});
-        }
-      }
-
-      if(isActive && age !== null && age > 14 && !notes.length){
-        items.push({priority:'warn',icon:'🗂',label:'No file notes — '+age+'d old',detail:ins.name+' ('+status+') — no correspondence recorded',nav:'entities'});
-      }
-
-      if(status === 'Quoted' && !docs.length && !notes.some(function(n){
-        return n.docType==='client-quotation'||n.docType==='quote-slip'||n.docType==='terms-indication';
-      })){
-        items.push({priority:'warn',icon:'💬',label:'Quote not documented',detail:ins.name+' — no quote slip or terms on file',nav:'entities'});
-      }
-    });
-  });
-
-  // Duplicate entity detection
-  var dupes = findDuplicateEntities();
-  dupes.forEach(function(d){
-    items.push({
-      priority:'warn', icon:'👥',
-      label:'Possible duplicate: '+d.aName.name+' / '+d.bName.name,
-      detail:'Name similarity '+d.similarity+'% — consider merging or linking as parent/subsidiary',
-      nav:'entities'
-    });
-  });
-
   if(!items.length){
-    el.innerHTML='<div style="color:var(--ok);font-size:12px;font-weight:600;padding:10px 0">✓ All files look complete</div>';
+    el.innerHTML='<div style="color:var(--ok);font-size:12px;font-weight:600;padding:10px 0">\u2713 All files look complete</div>';
     return;
   }
 
   items.sort(function(a,b){ return (a.priority==='err'?0:1)-(b.priority==='err'?0:1); });
 
+  // Deduplicate
   var seen = new Set();
   items = items.filter(function(t){
     var k=t.label+'|'+t.detail;
@@ -5335,7 +4644,8 @@ function renderHomeUpload(){
   var bgs={err:'var(--err-bg)',warn:'var(--warn-bg)'};
 
   el.innerHTML = items.slice(0,12).map(function(t){
-    return '<div onclick="tab(\''+t.nav+'\')" style="cursor:pointer;padding:10px 12px;background:var(--surface);border:1px solid '+colours[t.priority]+'30;border-left:3px solid '+colours[t.priority]+';border-radius:var(--radius);display:flex;gap:10px;align-items:flex-start;transition:background 0.15s;box-shadow:var(--shadow-sm)" onmouseover="this.style.background=\''+bgs[t.priority]+'\'" onmouseout="this.style.background=\'var(--surface)\'">'
+    var onclick = t.riskId ? 'openBackendRiskCard('+t.riskId+')' : 'tab(\''+t.nav+'\')';
+    return '<div onclick="'+onclick+'" style="cursor:pointer;padding:10px 12px;background:var(--surface);border:1px solid '+colours[t.priority]+'30;border-left:3px solid '+colours[t.priority]+';border-radius:var(--radius);display:flex;gap:10px;align-items:flex-start;transition:background 0.15s;box-shadow:var(--shadow-sm)" onmouseover="this.style.background=\''+bgs[t.priority]+'\'" onmouseout="this.style.background=\'var(--surface)\'">'
       +'<span style="font-size:14px;flex-shrink:0;margin-top:1px">'+t.icon+'</span>'
       +'<div><div style="font-size:12px;font-weight:600;color:'+colours[t.priority]+'">'+t.label+'</div>'
       +'<div style="font-size:11px;color:var(--text2);margin-top:2px">'+t.detail+'</div></div>'
@@ -5349,110 +4659,58 @@ function renderHomeUpload(){
 
 // ─── HOME TASKS ───────────────────────────────────────────────────────────────
 
-function renderHomeTasks(){
+async function renderHomeTasks(summary){
   var el = document.getElementById('home-tasks-inner');
   if(!el) return;
 
-  var ent = entGetState();
-  var s = gs();
-  var today = new Date(); today.setHours(0,0,0,0);
   var tasks = [];
+  var priorityMap = {urgent:'err', high:'err', normal:'warn', low:'warn'};
 
-  function daysAgo(dateStr){
-    var d = parseDate(dateStr); if(!d) return null;
-    return Math.round((today - d) / 86400000);
-  }
-  function daysUntil(dateStr){
-    var d = parseDate(dateStr); if(!d) return null;
-    return Math.round((d - today) / 86400000);
-  }
-
-  (ent.insureds||[]).forEach(function(ins){
-    var prod = (ent.producers||[]).find(function(p){ return p.id===ins.producerId; });
-    var prodName = prod ? prod.name : ins.producerId||'—';
-
-    (ins.enquiries||[]).forEach(function(enq){
-      var status = (enq.status||'').toLowerCase();
-      var incDay = daysUntil(enq.inceptionDate);
-      var enqAge = daysAgo(enq.enquiryDate);
-
-      // 1. Open subjectivities on bound account
-      if(enq.status==='Bound'){
-        var bindingNote = ([].concat(ins.notes||[])).reverse().find(function(n){
-          return n.docType==='binding-confirmation'||n.docType==='firm-order'||(n.statusChange||'').toLowerCase().includes('bound');
-        });
-        var subj = bindingNote&&bindingNote.terms&&bindingNote.terms.conditions ? bindingNote.terms.conditions : '';
-        if(subj){
-          tasks.push({priority:'err',icon:'\u26a0',label:'Subjectivities outstanding',detail:ins.name+' \u2014 '+subj.slice(0,60)+(subj.length>60?'\u2026':''),nav:'renewals',enqId:enq.id});
-        }
-      }
-
-      // 2. Renewal overdue (inception passed, still renewal pending)
-      if(enq.status==='Renewal pending' && incDay!==null && incDay < 0){
-        tasks.push({priority:'err',icon:'\u23f0',label:'Renewal overdue',detail:ins.name+' \u2014 inception '+enq.inceptionDate+' ('+Math.abs(incDay)+'d ago)',nav:'renewals'});
-      }
-
-      // 3. Renewal within 14 days, still pending
-      if(enq.status==='Renewal pending' && incDay!==null && incDay>=0 && incDay<=14){
-        tasks.push({priority:'err',icon:'\ud83d\udcc5',label:'Renewal due in '+incDay+'d',detail:ins.name+' \u2014 '+prodName,nav:'renewals'});
-      }
-
-      // 4. Quoted risk — inception within 14 days, no firm order
-      if(enq.status==='Quoted' && incDay!==null && incDay>=0 && incDay<=14){
-        tasks.push({priority:'err',icon:'\ud83d\udccc',label:'Quote expiring — no firm order',detail:ins.name+' \u2014 inception '+enq.inceptionDate,nav:'entities'});
-      }
-
-      // 5. Submission with no handler
-      if(['Submission','AW Submission','Quoted'].includes(enq.status) && !enq.handler){
-        tasks.push({priority:'warn',icon:'\ud83d\udc64',label:'No handler assigned',detail:ins.name+' \u2014 '+prodName,nav:'entities'});
-      }
-
-      // 6. Submission stale >21 days with no update
-      if(enq.status==='Submission' && enqAge!==null && enqAge>21){
-        tasks.push({priority:'warn',icon:'\ud83d\udcec',label:'Stale submission ('+enqAge+'d)',detail:ins.name+' \u2014 last activity '+enq.enquiryDate,nav:'pipeline'});
-      }
-
-      // 7. AW Submission stale >30 days
-      if(enq.status==='AW Submission' && enqAge!==null && enqAge>30){
-        tasks.push({priority:'warn',icon:'\ud83d\udcec',label:'AW submission stale ('+enqAge+'d)',detail:ins.name+' \u2014 check with AW',nav:'pipeline'});
-      }
-
-      // 8. Quoted >60 days with no decision
-      if(enq.status==='Quoted' && enqAge!==null && enqAge>60){
-        tasks.push({priority:'warn',icon:'\ud83d\udd54',label:'Quote outstanding 60d+',detail:ins.name+' \u2014 quoted '+enq.enquiryDate,nav:'pipeline'});
-      }
+  try {
+    // Fetch open PG tasks (sorted by priority, due date)
+    var taskData = await apiFetch('/tasks?limit=20');
+    var pgTasks = taskData.items || [];
+    pgTasks.forEach(function(t){
+      var overdue = t.due_date && new Date(t.due_date) < new Date();
+      var pri = overdue ? 'err' : (priorityMap[t.priority] || 'warn');
+      var detail = (t.assured_name || t.display_name || 'Risk #'+t.risk_id);
+      if(t.due_date) detail += ' · due ' + new Date(t.due_date).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+      if(overdue) detail += ' (overdue)';
+      tasks.push({
+        priority: pri,
+        icon: overdue ? '\u23f0' : t.priority==='urgent' ? '\u26a0' : '\ud83d\udccb',
+        label: t.title || 'Task',
+        detail: detail,
+        nav: 'pipeline',
+        riskId: t.risk_id
+      });
     });
-  });
 
-  // Pipeline: actions pending in old placements system
-  var ps = Object.values(s.placements||{});
-  ps.filter(function(p){ return p.actions&&p.actions.some(function(a){ return !a.done; }); })
-    .forEach(function(p){
-      var open = p.actions.filter(function(a){ return !a.done; }).length;
-      tasks.push({priority:'warn',icon:'\u2713',label:open+' open action'+(open>1?'s':''),detail:(p.insured||p.ref||'—')+' \u2014 pipeline',nav:'pipeline'});
-    });
+    // Add summary-level alerts if summary data provided
+    if(summary && summary.task_summary){
+      var ts = summary.task_summary;
+      if(parseInt(ts.overdue) > 0 && !tasks.some(function(t){ return t.label.indexOf('overdue')>-1; })){
+        // Already shown as individual overdue tasks above
+      }
+    }
+  } catch(e) {
+    console.warn('Home tasks PG fetch failed:', e.message);
+    tasks.push({priority:'warn',icon:'\u26a0',label:'Could not load tasks',detail:'Check connection to backend',nav:'pipeline'});
+  }
 
   if(!tasks.length){
-    el.innerHTML = '<div style="color:var(--ok);font-size:12px;font-weight:600;padding:10px 0">\u2713 No suggested tasks \u2014 all clear</div>';
+    el.innerHTML = '<div style="color:var(--ok);font-size:12px;font-weight:600;padding:10px 0">\u2713 No open tasks \u2014 all clear</div>';
     return;
   }
 
   // Sort: err first, then warn
   tasks.sort(function(a,b){ return (a.priority==='err'?0:1)-(b.priority==='err'?0:1); });
 
-  // Deduplicate by detail (avoid same account appearing multiple times for same issue)
-  var seen = new Set();
-  tasks = tasks.filter(function(t){
-    var k = t.label+'|'+t.detail;
-    if(seen.has(k)) return false;
-    seen.add(k); return true;
-  });
-
   var colours = {err:'var(--err)',warn:'var(--warn)'};
   var bgs = {err:'var(--err-bg)',warn:'var(--warn-bg)'};
 
   el.innerHTML = tasks.slice(0,12).map(function(t){
-    return '<div onclick="tab(\''+t.nav+'\')" style="cursor:pointer;padding:10px 12px;background:var(--surface);border:1px solid '+colours[t.priority]+'30;border-left:3px solid '+colours[t.priority]+';border-radius:var(--radius);display:flex;gap:10px;align-items:flex-start;transition:background 0.15s" onmouseover="this.style.background=\''+bgs[t.priority]+'\'" onmouseout="this.style.background=\'var(--surface)\'">'
+    return '<div onclick="'+(t.riskId ? 'openBackendRiskCard('+t.riskId+')' : 'tab(\''+t.nav+'\')')+'" style="cursor:pointer;padding:10px 12px;background:var(--surface);border:1px solid '+colours[t.priority]+'30;border-left:3px solid '+colours[t.priority]+';border-radius:var(--radius);display:flex;gap:10px;align-items:flex-start;transition:background 0.15s" onmouseover="this.style.background=\''+bgs[t.priority]+'\'" onmouseout="this.style.background=\'var(--surface)\'">'
       +'<span style="font-size:14px;flex-shrink:0;margin-top:1px">'+t.icon+'</span>'
       +'<div><div style="font-size:12px;font-weight:600;color:'+colours[t.priority]+'">'+t.label+'</div>'
       +'<div style="font-size:11px;color:var(--text2);margin-top:2px">'+t.detail+'</div></div>'
@@ -5460,7 +4718,7 @@ function renderHomeTasks(){
   }).join('');
 
   if(tasks.length > 12){
-    el.innerHTML += '<div style="font-size:11px;color:var(--text3);padding:6px 0">+'+(tasks.length-12)+' more tasks \u2014 review each section</div>';
+    el.innerHTML += '<div style="font-size:11px;color:var(--text3);padding:6px 0">+'+(tasks.length-12)+' more tasks</div>';
   }
 }
 
@@ -5474,229 +4732,118 @@ function parseDate(str){
   return isNaN(d.getTime()) ? null : d;
 }
 
-function getRenewalList(days){
-  const ent = entGetState();
-  const today = new Date(); today.setHours(0,0,0,0);
-  const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() + days);
-  const results = [];
-
-  (ent.insureds||[]).forEach(ins=>{
-    (ins.enquiries||[]).forEach(enq=>{
-      if(!enq.inceptionDate) return;
-      const code = canonicalRiskStatus(enq.status || 'submission');
-      if(['bound','closed_ntu'].includes(code)) return;
-
-      const d = parseDate(enq.inceptionDate);
-      if(!d) return;
-      const daysUntil = Math.round((d - today) / 86400000);
-      if(daysUntil < -7 || d > cutoff) return;
-
-      const prod = (ent.producers||[]).find(p=>p.id===ins.producerId);
-      results.push({
-        insured: ins.name,
-        insId: ins.id,
-        enqRef: enq.id,
-        producer: prod ? prod.name : ins.producerId||'—',
-        inception: enq.inceptionDate,
-        daysUntil,
-        status: riskStatusLabel(code),
-        statusCode: code,
-        premium: enq.premium ? (enq.currency||'') + ' ' + Number(enq.premium).toLocaleString() : '—',
-        handler: enq.handler||'—'
-      });
+async function getRenewalListPG(){
+  try {
+    var data = await apiFetch('/mi/renewals');
+    return (data.upcoming || []).map(function(r){
+      return {
+        id: r.id,
+        insured: r.entity_name || r.assured_name || r.display_name || '—',
+        producer: r.producer_entity_name || r.producer || '—',
+        inception: r.inception_date || '—',
+        expiry: r.expiry_date || '—',
+        daysUntil: r.days_to_expiry != null ? r.days_to_expiry : 999,
+        status: r.status || '—',
+        statusCode: r.status || 'submission',
+        premium: r.gross_premium ? (r.currency||'') + ' ' + Number(r.gross_premium).toLocaleString() : '—',
+        handler: r.handler || '—',
+        riskId: r.id
+      };
     });
-  });
-
-  return results.sort((a,b)=>{
-    if (a.daysUntil !== b.daysUntil) return a.daysUntil - b.daysUntil;
-    return riskStatusSortRank(b.statusCode) - riskStatusSortRank(a.statusCode);
-  });
+  } catch(e) {
+    console.warn('getRenewalListPG failed:', e.message);
+    return [];
+  }
 }
 
 function getPostBindList(){
-  // Find all bound accounts with outstanding tasks — no time limit, stays until cleared
-  const ent = entGetState();
-  const today = new Date(); today.setHours(0,0,0,0);
-  const results = [];
-
-  (ent.insureds||[]).forEach(ins=>{
-    (ins.enquiries||[]).forEach(enq=>{
-      if(enq.status !== 'Bound') return;
-
-      // Find the binding note — most recent note with docType binding-confirmation OR statusChange containing Bound
-      const bindingNote = [...(ins.notes||[])].reverse().find(n=>
-        n.docType==='binding-confirmation' ||
-        n.docType==='firm-order' ||
-        (n.statusChange||'').toLowerCase().includes('bound')
-      );
-
-      const bindDate = bindingNote ? parseDate(bindingNote.date) : parseDate(enq.inceptionDate);
-      const daysSinceBind = bindDate ? Math.round((today - bindDate) / 86400000) : null;
-
-      // Post-bind checklist outstanding items
-      const checklist = enq.checklist || {};
-      const CHECKLIST_ITEMS = ['EOC','Opening Memo','ImageRight','Eclipse','Invoiced','SharePoint','GFR'];
-      const outstandingChecklist = CHECKLIST_ITEMS.filter(item => !checklist[item]);
-
-      // Open actions from ALL notes since binding
-      const openActions = [];
-      const bindDateTs = bindDate ? bindDate.getTime() : 0;
-      (ins.notes||[]).forEach(n=>{
-        const nd = parseDate(n.date);
-        if(nd && nd.getTime() >= bindDateTs - 86400000*3){ // within 3 days before bind
-          (n.actions||[]).forEach(a=>{
-            const actionText = typeof a === 'string' ? a : (a.text||'');
-            const done = typeof a === 'object' ? a.done : false;
-            if(!done && actionText) openActions.push(actionText);
-          });
-        }
-      });
-
-      // Subjectivities from binding note terms
-      const subjectivities = bindingNote && bindingNote.terms && bindingNote.terms.conditions
-        ? bindingNote.terms.conditions : '';
-
-      // E&O risk: unactioned subjectivities are the primary concern
-      const hasOpenSubjectivities = !!subjectivities;
-      const hasOutstanding = hasOpenSubjectivities || openActions.length > 0;
-
-      // Drop from tracker entirely if no outstanding items (subjectivities or open actions)
-      // Checklist state is admin only and does not affect inclusion
-      if(!hasOutstanding) return;
-
-      const prod = (ent.producers||[]).find(p=>p.id===ins.producerId);
-      results.push({
-        insId: ins.id,
-        enqId: enq.id,
-        insured: ins.name,
-        producer: prod ? prod.name : ins.producerId||'—',
-        inception: enq.inceptionDate,
-        handler: enq.handler||'—',
-        daysSinceBind,
-        bindDate: bindingNote ? bindingNote.date : (enq.inceptionDate||''),
-        outstandingChecklist,
-        openActions,
-        subjectivities,
-        hasOutstanding,
-        checklist,
-        premium: enq.premium ? (enq.currency||'') + ' ' + Number(enq.premium).toLocaleString() : '—',
-      });
-    });
-  });
-
-  // Sort: accounts with outstanding items first, then by bind date descending
-  return results.sort((a,b)=>{
-    if(a.hasOutstanding && !b.hasOutstanding) return -1;
-    if(!a.hasOutstanding && b.hasOutstanding) return 1;
-    return (b.daysSinceBind||0) - (a.daysSinceBind||0);
-  });
+  // Kept as stub — PG post-bind checklist is on the risk card (buildPostBindChecklistHtml)
+  return [];
 }
 
 function toggleChecklistItem(insId, enqId, item){
-  const ent = entGetState();
-  const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { handleMissingLocalInsured(insId, 'toggle checklist item'); return; }
-  const enq = (ins.enquiries||[]).find(e=>e.id===enqId);
-  if(!enq) return;
-  if(!enq.checklist) enq.checklist = {};
-  enq.checklist[item] = !enq.checklist[item];
-  entSave(ent);
-  renderRenewals();
+  // Legacy localStorage checklist — no longer used. PG equivalent: togglePostBindField on risk card.
+  showNotice('Use the risk card post-bind checklist','warn');
 }
 
-function renderRenewals(){
-  const today = new Date(); today.setHours(0,0,0,0);
-  const urgencyColour = d => d <= 0 ? 'var(--err)' : d <= 14 ? 'var(--err)' : d <= 30 ? 'var(--warn)' : 'var(--ok)';
-  const urgencyBg = d => d <= 0 ? 'var(--err-bg)' : d <= 14 ? 'var(--err-bg)' : d <= 30 ? 'var(--warn-bg)' : 'var(--ok-bg)';
+async function renderRenewals(){
+  var today = new Date(); today.setHours(0,0,0,0);
+  var urgencyColour = function(d){ return d <= 0 ? 'var(--err)' : d <= 14 ? 'var(--err)' : d <= 30 ? 'var(--warn)' : 'var(--ok)'; };
+  var urgencyBg = function(d){ return d <= 0 ? 'var(--err-bg)' : d <= 14 ? 'var(--err-bg)' : d <= 30 ? 'var(--warn-bg)' : 'var(--ok-bg)'; };
 
   // ── Upcoming ──────────────────────────────────────────────────────────────
-  const upcoming = getRenewalList(90);
-  const upEl = document.getElementById('renewal-upcoming');
+  var upcoming = await getRenewalListPG();
+  var upEl = document.getElementById('renewal-upcoming');
   if(upEl){
     if(!upcoming.length){
-      upEl.innerHTML='<div class="card"><p class="muted">No renewals in the next 90 days. Make sure inception dates are set on account enquiries.</p></div>';
+      upEl.innerHTML='<div class="card"><p class="muted">No renewals in the next 90 days.</p></div>';
     } else {
-      upEl.innerHTML = `<div class="card" style="margin-bottom:10px"><p class="muted" style="margin:0">Calendar view only. WIP owns live placement handling; this screen keeps upcoming renewal dates visible so nothing quietly rolls over.</p></div><div style="overflow-x:auto"><table>
-        <tr><th>Days</th><th>Insured</th><th>Producer</th><th>Inception</th><th>Status</th><th>Premium</th><th>Handler</th><th>Churn risk</th></tr>
-        ${upcoming.map(r=>`<tr>
-          <td><span style="display:inline-block;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px;background:${urgencyBg(r.daysUntil)};color:${urgencyColour(r.daysUntil)}">${r.daysUntil <= 0 ? 'OVERDUE' : r.daysUntil + 'd'}</span></td>
-          <td><strong>${r.insured}</strong></td>
-          <td class="muted">${r.producer}</td>
-          <td>${r.inception}</td>
-          <td>${riskStatusBadgeHtml(r.statusCode || r.status)}</td>
-          <td>${r.premium}</td>
-          <td>${r.handler}</td>
-          <td>${(()=>{ const ent=entGetState(); const ins=(ent.insureds||[]).find(i=>i.id===r.insId); const enq=ins&&(ins.enquiries||[]).find(e=>e.id===r.enqRef); if(!ins||!enq) return '—'; const ch=calcChurnRisk(ins,enq); return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:'+ch.bg+';color:'+ch.col+'" title="'+ch.flags.join(', ')+'">'+ch.level+'</span>'; })()}</td>
-        </tr>`).join('')}
-      </table></div>`;
+      upEl.innerHTML = '<div class="card" style="margin-bottom:10px"><p class="muted" style="margin:0">Calendar view from PG risks. Click a row to open the risk card.</p></div><div style="overflow-x:auto"><table>'
+        +'<tr><th>Days</th><th>Insured</th><th>Producer</th><th>Expiry</th><th>Status</th><th>Premium</th><th>Handler</th></tr>'
+        + upcoming.map(function(r){
+          return '<tr style="cursor:pointer" onclick="openBackendRiskCard('+r.riskId+')">'
+            +'<td><span style="display:inline-block;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px;background:'+urgencyBg(r.daysUntil)+';color:'+urgencyColour(r.daysUntil)+'">'+(r.daysUntil <= 0 ? 'OVERDUE' : r.daysUntil + 'd')+'</span></td>'
+            +'<td><strong>'+escapeHtml(r.insured)+'</strong></td>'
+            +'<td class="muted">'+escapeHtml(r.producer)+'</td>'
+            +'<td>'+r.expiry+'</td>'
+            +'<td>'+riskStatusBadgeHtml(r.statusCode)+'</td>'
+            +'<td>'+r.premium+'</td>'
+            +'<td>'+r.handler+'</td>'
+            +'</tr>';
+        }).join('')
+        +'</table></div>';
     }
   }
 
   // ── Post-bind tracker ─────────────────────────────────────────────────────
-  const bound = getPostBindList();
-  const pbEl = document.getElementById('renewal-postbind');
+  // P20: Post-bind checklist now lives on individual risk cards (buildPostBindChecklistHtml).
+  // Show bound risks with incomplete post-bind fields from PG.
+  var pbEl = document.getElementById('renewal-postbind');
   if(!pbEl) return;
 
-  if(!bound.length){
-    pbEl.innerHTML='<div class="card"><p class="muted">No bound accounts with outstanding controls. Accounts appear here after binding and drop off only when all post-placement actions are complete.</p></div>';
-    return;
-  }
+  try {
+    var risksData = await apiFetch('/risks?status=bound&limit=100');
+    var boundRisks = (risksData.items || []).filter(function(r){
+      // Show risks with at least one post-bind field incomplete
+      return !r.pb_evidence_of_cover || !r.pb_subjectivities_cleared || !r.pb_invoice_sent ||
+             (!r.pb_closings_sent && !r.direct_accounting);
+    });
 
-  const CHECKLIST_ITEMS = ['EOC','Opening Memo','ImageRight','Eclipse','Invoiced','SharePoint','GFR'];
+    if(!boundRisks.length){
+      pbEl.innerHTML='<div class="card"><p class="muted">All bound risks have complete post-bind checklists.</p></div>';
+      return;
+    }
 
-  pbEl.innerHTML = bound.map(r => {
-    const age = r.daysSinceBind != null ? r.daysSinceBind : '?';
-    const ageBg = age <= 7 ? 'var(--ok-bg)' : age <= 30 ? 'var(--warn-bg)' : 'var(--err-bg)';
-    const ageCol = age <= 7 ? 'var(--ok)' : age <= 30 ? 'var(--warn)' : 'var(--err)';
-    const allClear = !r.hasOutstanding;
+    pbEl.innerHTML = boundRisks.map(function(r){
+      var fields = [
+        {key:'pb_evidence_of_cover', label:'EOC', done: r.pb_evidence_of_cover},
+        {key:'pb_subjectivities_cleared', label:'Subjectivities', done: r.pb_subjectivities_cleared},
+        {key:'pb_invoice_sent', label:'Invoice', done: r.pb_invoice_sent}
+      ];
+      if(!r.direct_accounting) fields.push({key:'pb_closings_sent', label:'Closings', done: r.pb_closings_sent});
 
-    // Subjectivities warning — E&O risk
-    const subjWarningHtml = r.subjectivities
-      ? `<div style="margin-bottom:8px;padding:8px 10px;background:var(--err-bg);border:1px solid var(--err)40;border-radius:6px;display:flex;gap:8px;align-items:flex-start">
-          <span style="color:var(--err);font-weight:700;font-size:12px;flex-shrink:0">⚠ Subjectivities outstanding</span>
-          <span style="font-size:11px;color:var(--err)">${r.subjectivities}</span>
-        </div>` : '';
+      var completedCount = fields.filter(function(f){ return f.done; }).length;
+      var pct = Math.round(completedCount / fields.length * 100);
+      var pctCol = pct === 100 ? 'var(--ok)' : pct >= 50 ? 'var(--warn)' : 'var(--err)';
 
-    // Checklist pills — admin only, does not drive inclusion
-    const checklistHtml = CHECKLIST_ITEMS.map(item => {
-      const done = r.checklist[item];
-      return `<span onclick="toggleChecklistItem('${r.insId}','${r.enqId}','${item}')"
-        style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;cursor:pointer;margin:2px;
-        background:${done?'var(--ok-bg)':'var(--surface)'};color:${done?'var(--ok)':'var(--text3)'};border:1px solid ${done?'var(--ok)':'var(--border)'}">
-        ${done?'✓':'○'} ${item}
-      </span>`;
+      var pillsHtml = fields.map(function(f){
+        return '<span onclick="togglePostBindField('+r.id+',\''+f.key+'\','+(f.done?'false':'true')+')" style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;cursor:pointer;margin:2px;background:'+(f.done?'var(--ok-bg)':'var(--surface)')+';color:'+(f.done?'var(--ok)':'var(--text3)')+';border:1px solid '+(f.done?'var(--ok)':'var(--border)')+'">'+(f.done?'✓':'○')+' '+f.label+'</span>';
+      }).join('');
+
+      return '<div class="card" style="margin-bottom:10px;cursor:pointer" onclick="openBackendRiskCard('+r.id+')">'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:6px">'
+        +'<div>'
+        +'<div style="font-size:13px;font-weight:600">'+escapeHtml(r.entity_name||r.assured_name||r.display_name||'')+'</div>'
+        +'<div class="muted" style="font-size:11px">'+escapeHtml(r.producer||'')+' · '+(r.inception_date||'—')+' · '+(r.handler||'—')+'</div>'
+        +'</div>'
+        +'<span style="font-size:11px;font-weight:600;padding:2px 10px;border-radius:10px;background:'+(pct===100?'var(--ok-bg)':'var(--warn-bg)')+';color:'+pctCol+'">'+pct+'% complete</span>'
+        +'</div>'
+        +'<div style="margin-top:4px">'+pillsHtml+'</div>'
+        +'</div>';
     }).join('');
-
-    // Open actions
-    const actionsHtml = r.openActions.length
-      ? r.openActions.slice(0,5).map(a=>`<div style="font-size:11px;color:var(--acc);padding:2px 0">→ ${a}</div>`).join('')
-      : '';
-
-    // Subjectivities
-    const subjHtml = r.subjectivities
-      ? `<div style="margin-top:6px;padding:6px 8px;background:var(--warn-bg);border-radius:5px;font-size:11px;color:var(--warn)">
-          <span style="font-weight:600">Subjectivities: </span>${r.subjectivities}
-        </div>` : '';
-
-    return `<div class="card" style="margin-bottom:10px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-        <div>
-          <div style="font-size:13px;font-weight:600">${r.insured}</div>
-          <div class="muted" style="font-size:11px">${r.producer} · Inception ${r.inception} · ${r.handler}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:11px;font-weight:600;padding:2px 10px;border-radius:10px;background:${ageBg};color:${ageCol}">
-            ${r.subjectivities ? '⚠ Subjectivities open' : age+'d since bind'}
-          </span>
-        </div>
-      </div>
-      ${subjWarningHtml}
-      <div style="margin-bottom:4px;margin-top:6px">${checklistHtml}</div>
-      <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Post-placement admin — tick when complete</div>
-      ${actionsHtml ? `<div style="margin-top:6px">${actionsHtml}</div>` : ''}
-      ${!r.subjectivities ? '<div style="font-size:11px;color:var(--ok);margin-top:6px;font-weight:600">✓ No open subjectivities</div>' : ''}
-    </div>`;
-  }).join('');
+  } catch(e) {
+    pbEl.innerHTML='<div class="card"><p class="muted">Could not load post-bind data: '+e.message+'</p></div>';
+  }
 }
 
 // ─── PRODUCTION DIARY ─────────────────────────────────────────────────────────
@@ -6436,99 +5583,28 @@ function useSlipAsPrecedent(id){
 }
 
 
-// ─── DELETE FUNCTIONS ─────────────────────────────────────────────────────────
-
-function deleteInsured(insId){
-  const ent = entGetState();
-  const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { handleMissingLocalInsured(insId, 'delete account'); return; }
-  if(!confirm(`Delete ${ins.name} and all associated notes and documents? This cannot be undone.`)) return;
-  ent.insureds = ent.insureds.filter(i=>i.id!==insId);
-  entSave(ent);
-  entCloseCard();
-  renderEntities();
-  showNotice('✓ ' + ins.name + ' deleted', 'ok');
-}
-
-function deleteNote(insId, noteId){
-  const ent = entGetState();
-  const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { handleMissingLocalInsured(insId, 'delete note'); return; }
-  if(!confirm('Delete this note? This cannot be undone.')) return;
-  ins.notes = (ins.notes||[]).filter(n=>n.id!==noteId);
-  entSave(ent);
-  entCard(insId);
-  showNotice('✓ Note deleted', 'ok');
-}
-
-
-// ─── COMPANY RESEARCH ─────────────────────────────────────────────────────────
-
-async function researchCompany(insId){
-  const key = getKey();
-  if(!key){ showNotice('API key required for company research','err'); return; }
-
-  const ent = entGetState();
-  const ins = (ent.insureds||[]).find(i=>i.id===insId);
-  if(!ins) { handleMissingLocalInsured(insId, 'research company'); return; }
-
-  const btn = document.getElementById('research-btn-'+insId);
+// P21: Legacy localStorage delete/research functions removed.
+// deleteInsured/deleteNote — use PG entity card. researchCompany — to be rebuilt for PG entities.
+function deleteInsured(){ showNotice('Use the PG entity card to manage entities','warn'); }
+function deleteNote(){ showNotice('Use the PG entity card to manage notes','warn'); }
+async function researchCompany(entityId){
+  // P21: PG-backed company research via backend AI endpoint
+  if(!entityId){ showNotice('Entity ID required','err'); return; }
+  var btn = document.querySelector('[onclick*="researchCompany"]');
   if(btn){ btn.textContent = '⟳ Researching...'; btn.disabled = true; }
-
-  const query = ins.name + (ins.region ? ' ' + ins.region : '');
-
-  try{
-    const text = await aiText({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 800,
-      system: `You are a Lloyd's wholesale broker doing background research on a potential insured.
-Search for information about the company and return a concise intelligence report covering:
-1. What the company does (industry, products, operations)
-2. Size and scale (employees, revenue, locations if available)
-3. Key facts relevant to insurance (cargo volumes, storage, transport, commodities)
-4. Any red flags (sanctions, adverse news, financial distress)
-5. Registered country/jurisdiction
-
-Be factual and concise. Flag anything that would be relevant to underwriting.
-Return plain text, no markdown headers.`,
-      user: `Research this company for Lloyd's insurance underwriting purposes: ${query}`
+  try {
+    var data = await apiFetch('/entities/' + entityId + '/research', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: '{}'
     });
-
-    if(!text){ throw new Error('No research results returned'); }
-
-    // Save as a background note on the insured
-    if(!ins.notes) ins.notes = [];
-    ins.notes.push({
-      id: 'note-research-'+Date.now(),
-      date: new Date().toLocaleDateString('en-GB').replace(/\//g,'/'),
-      handler: 'AI',
-      parties: 'Web research',
-      summary: text.slice(0, 400),
-      actions: [],
-      statusChange: '',
-      docType: 'general-correspondence',
-      terms: {},
-      source: 'company-research',
-      fullText: text
-    });
-
-    // Also store as structured background field
-    ins.companyBackground = {
-      text,
-      researched: new Date().toISOString().slice(0,10),
-      query
-    };
-
-    entSave(ent);
-
-    // Re-render the card to show the research
-    entCard(insId);
-    showNotice('✓ Company research saved to account file', 'ok');
-
+    showNotice('✓ Research saved for ' + (data.entity_name || 'entity'), 'ok');
+    // Refresh the entity card to show the new note
+    if(typeof openEntityCard === 'function') openEntityCard(entityId);
   } catch(e) {
     showNotice('Research failed: ' + e.message, 'err');
-    if(btn){ btn.textContent = '🔍 Research company'; btn.disabled = false; }
   }
+  if(btn){ btn.textContent = '🔍 Research company'; btn.disabled = false; }
 }
 
 
@@ -6751,7 +5827,6 @@ function renderReviewItem(){
   const confColour = {high:'var(--ok)',medium:'var(--warn)',low:'var(--err)'}[match.confidence]||'var(--text2)';
   const freshList = item.insuredList || [];
   const pgMatchId = match.matched_entity_id || null;
-  const insuredOpts = freshList.map(i=>`<option value="${i.id}" ${(pgMatchId && i.id===pgMatchId) || (!pgMatchId && i.id===match.matched_id)?'selected':''}>${escapeHtml(i.name)}</option>`).join('');
   const aiInsuredName = (item.note && item.note.insuredName) || '';
   const fileBaseName = item.file ? item.file.replace(/RE_|FW_|re_|fw_/gi,'').replace(/_/g,' ').replace(/\.(msg|eml|txt)$/i,'').split(' - ')[0].trim() : '';
   const suggestedInsuredName = aiInsuredName || match.matched_name || fileBaseName || '';
@@ -7495,7 +6570,6 @@ async function renderBook(){
 
     const fmtN = v => v != null ? Number(v).toLocaleString() : '—';
     const fmtPct = v => v != null ? v + '%' : '—';
-    const ent = entGetState();
     const bookStatusOptions = ['bound','renewal_pending','in_market','quoted','firm_order','submission','closed_ntu','expired_review'];
 
     tbody.innerHTML = rows.map(r => {
@@ -7506,21 +6580,8 @@ async function renderBook(){
 
       let mktHtml = '';
       if(showMkt){
-        const ins = (ent.insureds || []).find(i =>
-          i.name.toLowerCase().includes((r.assured || '').toLowerCase().slice(0,8)) ||
-          (r.assured || '').toLowerCase().includes(i.name.toLowerCase().slice(0,8))
-        );
-        const placement = ins && ins.enquiries && ins.enquiries.find(e => e.placement && e.placement.layers);
-        if(placement){
-          const pl = placement.placement;
-          const layer = r.layer ? pl.layers.find(l => (l.description || '').toLowerCase().includes(r.layer.toLowerCase().split(' ')[0])) : pl.layers[0];
-          if(layer && layer.markets){
-            mktHtml = layer.markets.map(m =>
-              `<div style="font-size:10px;color:var(--text2)">${m.name} <span style="color:var(--acc);font-weight:600">${m.writtenLine || m.signedLine || ''}%</span>${m.role === 'lead' ? ' <span style="font-size:9px;color:var(--ok)">[lead]</span>' : ''}</div>`
-            ).join('');
-          }
-        }
-        if(!mktHtml) mktHtml = '<span class="muted" style="font-size:10px">No market data</span>';
+        // P21: Market data now in PG market_interactions — use Intelligence panel for full detail
+        mktHtml = r.id ? '<span class="muted" style="font-size:10px;cursor:pointer" onclick="openBackendRiskCard(' + r.id + ')">View in risk card</span>' : '<span class="muted" style="font-size:10px">—</span>';
       }
 
       const premCell = is2026
@@ -7669,7 +6730,35 @@ function deleteLedgerEntry(){if(!confirm('Delete?'))return;var s=getBookState(),
 function leCalcGbp(){var n=parseFloat(document.getElementById('le-native').value)||0,r=parseFloat(document.getElementById('le-rate').value)||0,c=document.getElementById('le-ccy').value;if(n&&r&&c!=='GBP')document.getElementById('le-gbp').value=Math.round(n/r);else if(n&&c==='GBP')document.getElementById('le-gbp').value=Math.round(n);}
 
 // FX entity synthesis
-function fxGetFilteredRows(){var s=getBookState(),year=(document.getElementById('book-year')||{value:'2026'}).value;var rows=(s.bookRows||[]).filter(function(r){return r.accountingYear===year;});var ent=entGetState(),keys=new Set(rows.map(function(r){return (r.displayName||r.assured||'').toLowerCase().slice(0,14);}));(ent.insureds||[]).forEach(function(ins){var prod=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});(ins.enquiries||[]).forEach(function(enq){if((enq.status||'').toLowerCase()!=='bound')return;var p=(enq.inceptionDate||'').split('/');if(p.length!==3||p[2].trim()!==String(year))return;var k=ins.name.toLowerCase().slice(0,14);if(keys.has(k))return;var gp=null,brok=null,ret=100,rc=null;if(enq.placement&&enq.placement.layers&&enq.placement.layers.length){var l=enq.placement.layers[0];gp=parseFloat(l.grossPremium)||null;brok=parseFloat(l.brokerage)||null;ret=parseFloat(l.ogbRetainPct)||100;if(gp&&brok)rc=Math.round(gp*(brok/100)*(ret/100));}if(!gp)gp=parseFloat(enq.premium)||null;if(!rc&&enq.commission)rc=parseFloat(enq.commission)||null;rows.push({id:'fx-synth-'+enq.id,assured:ins.name,displayName:ins.name,producer:prod?prod.name:'',ccy:enq.currency||'USD',status:'Bound',premium:gp,order:100,brokerage:brok||0,retainedPct:ret,gbpComm:null,retainedComm:rc,accountingYear:year,_fromEntities:true});keys.add(k);});});return rows;}
+async function fxGetFilteredRows(){
+  // P21: Rewritten to use PG portfolio data instead of localStorage
+  var year = (document.getElementById('book-year') || {value:'2026'}).value;
+  try {
+    var data = await apiFetch('/portfolio-by-year?year=' + year);
+    return (data.items || []).map(function(r) {
+      return {
+        id: r.id,
+        assured: r.assured_name || r.display_name || '',
+        displayName: r.display_name || r.assured_name || '',
+        producer: r.producer || '',
+        ccy: r.currency || 'USD',
+        status: r.status || '',
+        premium: r.gross_premium != null ? parseFloat(r.gross_premium) : null,
+        order: r.order_pct != null ? parseFloat(r.order_pct) : 100,
+        brokerage: r.brokerage_pct != null ? parseFloat(r.brokerage_pct) : 0,
+        retainedPct: r.retained_pct != null ? parseFloat(r.retained_pct) : 100,
+        gbpComm: r.locked_gbp_commission != null ? parseFloat(r.locked_gbp_commission) : null,
+        retainedComm: r.estimated_gbp_commission != null ? parseFloat(r.estimated_gbp_commission) : null,
+        accountingYear: String(r.accounting_year || year)
+      };
+    });
+  } catch(e) {
+    console.warn('FX panel PG fetch failed, falling back to localStorage:', e.message);
+    // Fallback: old localStorage path
+    var s = getBookState();
+    return (s.bookRows || []).filter(function(r) { return r.accountingYear === year; });
+  }
+}
 
 // Rate suggestion
 var RATE_CAT_NEW = new Set(['turkey','japan','chile','philippines','indonesia','mexico','peru','colombia','taiwan','iran','pakistan','florida','bangladesh','netherlands','vietnam','thailand','myanmar','india','nigeria']);
@@ -7698,92 +6787,11 @@ function downloadDataJson(){var b=new Blob([JSON.stringify({_at:new Date().toISO
 function importData(){var raw=(document.getElementById('import-json').value||'').trim();var el=document.getElementById('import-notice');el.style.display='block';if(!raw){el.textContent='Paste JSON first';el.style.color='var(--err)';return;}var p;try{p=JSON.parse(raw);}catch(e){el.textContent='Invalid JSON: '+e.message;el.style.color='var(--err)';return;}var imported=[];if(p.ogb_state){var ex=gs(),inc=p.ogb_state;if(inc.bookRows){if(!ex.bookRows)ex.bookRows=[];var ids=new Set(ex.bookRows.map(function(r){return r.id;}));var nr=inc.bookRows.filter(function(r){return !ids.has(r.id);});ex.bookRows=ex.bookRows.concat(nr);if(nr.length)imported.push(nr.length+' rows');}ss(ex);}if(p.ogb_entities){var exE=entGetState(),incE=p.ogb_entities;var ii=new Set((exE.insureds||[]).map(function(i){return i.id;}));var ni=(incE.insureds||[]).filter(function(i){return !ii.has(i.id);});exE.insureds=(exE.insureds||[]).concat(ni);entSave(exE);if(ni.length)imported.push(ni.length+' insureds');}el.textContent=imported.length?'✓ Imported: '+imported.join(', '):'Nothing new to import';el.style.color=imported.length?'var(--ok)':'var(--warn)';}
 function clearAllData(){if(!confirm('Clear ALL data?'))return;if(!confirm('Sure?'))return;localStorage.removeItem('og_state_v4');showNotice('Cleared — reload','warn');setTimeout(function(){location.reload();},1500);}
 
-function buildMigrationPayload() {
-  var ent = entGetState();
-  var insureds = ent.insureds || [];
-  var producers = ent.producers || [];
-  var payload = { entities: [], link_risks: true };
-
-  // Producers first
-  producers.forEach(function(p) {
-    payload.entities.push({
-      name: p.name,
-      entity_type: 'producer',
-      region: p.region || null,
-      handler: p.handler || null,
-      metadata: { localStorage_id: p.id },
-      notes: []
-    });
-  });
-
-  // Then insureds
-  insureds.forEach(function(ins) {
-    var prod = producers.find(function(p) { return p.id === ins.producerId; });
-    var notes = (ins.notes || []).map(function(n) {
-      return {
-        date: n.date || null,
-        handler: n.handler || null,
-        parties: n.parties || null,
-        summary: n.summary || null,
-        actions: n.actions || [],
-        statusChange: n.statusChange || null,
-        docType: n.docType || 'general-correspondence',
-        terms: n.terms || {},
-        source: 'localStorage_migration'
-      };
-    });
-    payload.entities.push({
-      name: ins.name,
-      entity_type: 'insured',
-      producer_name: prod ? prod.name : null,
-      region: ins.region || null,
-      handler: ins.handler || null,
-      metadata: { localStorage_id: ins.id },
-      notes: notes
-    });
-  });
-
-  return payload;
-}
-
-function previewMigration() {
-  var payload = buildMigrationPayload();
-  var producers = payload.entities.filter(function(e) { return e.entity_type === 'producer'; });
-  var insureds = payload.entities.filter(function(e) { return e.entity_type === 'insured'; });
-  var totalNotes = insureds.reduce(function(s, e) { return s + (e.notes || []).length; }, 0);
-  var el = document.getElementById('migrate-notice');
-  el.style.display = 'block';
-  el.style.color = 'var(--text)';
-  el.innerHTML = '<b>Preview:</b> ' + producers.length + ' producers, ' + insureds.length + ' insureds, ' + totalNotes + ' notes will be migrated. Existing entities won\'t be duplicated.';
-}
-
-async function migrateEntitiesToPG() {
-  var payload = buildMigrationPayload();
-  if (!payload.entities.length) {
-    showNotice('No localStorage entities to migrate', 'warn');
-    return;
-  }
-  if (!confirm('Migrate ' + payload.entities.length + ' entities to PostgreSQL? This is safe — duplicates are skipped.')) return;
-  var el = document.getElementById('migrate-notice');
-  el.style.display = 'block';
-  el.style.color = 'var(--text2)';
-  el.textContent = 'Migrating...';
-  try {
-    var result = await apiFetch('/entities/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    el.style.color = 'var(--ok)';
-    el.innerHTML = '✓ Done — ' + result.created + ' entities created, ' + result.notes_created + ' notes, ' + result.risks_linked + ' risks linked' +
-      (result.errors && result.errors.length ? '<br><span style="color:var(--warn)">Warnings: ' + result.errors.join('; ') + '</span>' : '');
-    showNotice('✓ Migration complete', 'ok');
-    renderEntities();
-  } catch(e) {
-    el.style.color = 'var(--err)';
-    el.textContent = 'Migration failed: ' + e.message;
-  }
-}
+// P21: Migration functions removed — migration complete (151 entities in PG).
+// Stubs kept for any residual callers.
+function buildMigrationPayload() { return { entities: [] }; }
+function previewMigration() { showNotice('Migration already complete — 151 entities in PG', 'ok'); }
+async function migrateEntitiesToPG() { showNotice('Migration already complete — 151 entities in PG', 'ok'); }
 
 async function cleanupJunkRisks(dryRun) {
   var el = document.getElementById('cleanup-notice');
@@ -7816,11 +6824,70 @@ async function cleanupJunkRisks(dryRun) {
 
 // Draft & Renewal
 function draftMode(m){var c=document.getElementById('draft-comms-mode'),r=document.getElementById('draft-renewal-mode');if(c)c.style.display=m==='comms'?'block':'none';if(r)r.style.display=m==='renewal'?'block':'none';var tc=document.getElementById('draft-tab-comms'),tr=document.getElementById('draft-tab-renewal');if(tc)tc.classList.toggle('active',m==='comms');if(tr)tr.classList.toggle('active',m==='renewal');if(m==='renewal')populateRenewalRefs();}
-function populateRenewalRefs(){var ent=entGetState(),sel=document.getElementById('renewal-ref');if(!sel)return;var opts=[];(ent.insureds||[]).forEach(function(ins){(ins.enquiries||[]).filter(function(e){return e.status==='Bound';}).forEach(function(enq){var p=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});opts.push({v:ins.id+'::'+enq.id,l:ins.name+' · '+(enq.inceptionDate||'?')+' · '+(p?p.name:'')});});});opts.sort(function(a,b){return a.l.localeCompare(b.l);});sel.innerHTML='<option value="">Select bound account...</option>'+opts.map(function(o){return '<option value="'+o.v+'">'+o.l+'</option>';}).join('');}
+async function populateRenewalRefs(){
+  // P21: Rewritten to use PG bound risks instead of localStorage
+  var sel=document.getElementById('renewal-ref');if(!sel)return;
+  try {
+    var data = await apiFetch('/risks?status=bound&limit=200');
+    var risks = data.items || data || [];
+    var opts = risks.map(function(r){
+      return {v: String(r.id), l: (r.display_name||r.assured_name||'?')+' · '+(r.inception_date||'?')+' · '+(r.producer||'')};
+    }).sort(function(a,b){return a.l.localeCompare(b.l);});
+    sel.innerHTML='<option value="">Select bound risk...</option>'+opts.map(function(o){return '<option value="'+o.v+'">'+o.l+'</option>';}).join('');
+  } catch(e) {
+    // Fallback to localStorage
+    var ent=entGetState();var opts=[];
+    (ent.insureds||[]).forEach(function(ins){(ins.enquiries||[]).filter(function(e){return e.status==='Bound';}).forEach(function(enq){var p=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});opts.push({v:ins.id+'::'+enq.id,l:ins.name+' · '+(enq.inceptionDate||'?')+' · '+(p?p.name:'')});});});
+    opts.sort(function(a,b){return a.l.localeCompare(b.l);});
+    sel.innerHTML='<option value="">Select bound account...</option>'+opts.map(function(o){return '<option value="'+o.v+'">'+o.l+'</option>';}).join('');
+  }
+}
 var _rpDocs_new={mrc:'',sub:'',client:''};
 function rpTab(t){['mrc','sub','client'].forEach(function(x){var btn=document.getElementById('rp-tab-'+x);if(btn)btn.classList.toggle('active',x===t);});var lbl=document.getElementById('rp-active-label');if(lbl)lbl.textContent={mrc:'MRC summary',sub:'Market submission',client:'Client covering note'}[t]||'';var out=document.getElementById('rp-out');if(out)out.textContent=_rpDocs_new[t]||'(not generated)';}
 function copyRpDoc(){var t=['mrc','sub','client'].find(function(x){var btn=document.getElementById('rp-tab-'+x);return btn&&btn.classList.contains('active');});if(t&&_rpDocs_new[t])navigator.clipboard.writeText(_rpDocs_new[t]).then(function(){showNotice('Copied','ok');});}
-async function generateRenewalPack(){var ref=document.getElementById('renewal-ref').value;if(!ref){showNotice('Select an account first','err');return;}var parts=ref.split('::'),insId=parts[0],enqId=parts[1];var ent=entGetState(),ins=(ent.insureds||[]).find(function(i){return i.id===insId;}),enq=ins&&(ins.enquiries||[]).find(function(e){return e.id===enqId;});if(!ins||!enq){showNotice('Account not found','err');return;}var key=getKey();if(!key){showNotice('API key required','err');return;}var spEl=document.getElementById('renewal-spin'),oc=document.getElementById('renewal-out-card');if(spEl)spEl.style.display='inline';if(oc)oc.style.display='none';_rpDocs_new={mrc:'',sub:'',client:''};var prod=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});var ctx='Insured: '+ins.name+'\nProducer: '+(prod?prod.name:'—')+'\nInception: '+(enq.inceptionDate||'—')+'\nExpiry: '+(enq.expiryDate||'—')+'\nRenewal inception: '+((document.getElementById('renewal-date')||{value:'TBC'}).value||'TBC')+'\nProduct: '+(enq.product||'Marine Cargo/STP')+'\nCurrency: '+(enq.currency||'USD')+'\nPremium: '+(enq.premium||'—')+'\nChanges: '+((document.getElementById('renewal-ctx')||{value:''}).value||'none specified');var MRC_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking. Write an MRC renewal summary slip in plain text with ALL CAPS headers. Include: RENEWAL, INSURED, CEDANT, PERIOD, INTEREST, CONDITIONS, SUM INSURED, PREMIUM, BROKERAGE, CHANGES FROM EXPIRING, SUBJECTIVITIES.';var SUB_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking writing a renewal market submission email. Story-first, reference the relationship and loss record. Plain text, Subject: line first, no markdown.';var CLT_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking writing a renewal covering note to the producer or client. Professional and warm. Plain text only.';var results=await Promise.all([callAI(MRC_SYS,ctx,1200),callAI(SUB_SYS,ctx,1000),callAI(CLT_SYS,ctx,800)]);_rpDocs_new.mrc=results[0]||'(failed)';_rpDocs_new.sub=results[1]||'(failed)';_rpDocs_new.client=results[2]||'(failed)';if(spEl)spEl.style.display='none';if(oc)oc.style.display='block';rpTab('mrc');showNotice('✓ Renewal pack generated','ok');}
+async function generateRenewalPack(){
+  var ref=document.getElementById('renewal-ref').value;
+  if(!ref){showNotice('Select a risk first','err');return;}
+  var key=getKey();if(!key){showNotice('API key required','err');return;}
+  var spEl=document.getElementById('renewal-spin'),oc=document.getElementById('renewal-out-card');
+  if(spEl)spEl.style.display='inline';if(oc)oc.style.display='none';
+  _rpDocs_new={mrc:'',sub:'',client:''};
+
+  // P21: Try PG risk first (ref is a risk ID), fall back to localStorage insId::enqId
+  var ctx = '';
+  if(ref.indexOf('::') === -1) {
+    // PG risk ID
+    try {
+      var risk = await apiFetch('/risks/' + ref);
+      var renewalDate = ((document.getElementById('renewal-date')||{value:'TBC'}).value||'TBC');
+      var changes = ((document.getElementById('renewal-ctx')||{value:''}).value||'none specified');
+      ctx = 'Insured: '+(risk.assured_name||'—')
+        +'\nProducer: '+(risk.producer||'—')
+        +'\nInception: '+(risk.inception_date||'—')
+        +'\nExpiry: '+(risk.expiry_date||'—')
+        +'\nRenewal inception: '+renewalDate
+        +'\nProduct: '+(risk.product||'Marine Cargo/STP')
+        +'\nCurrency: '+(risk.currency||'USD')
+        +'\nPremium: '+(risk.gross_premium||'—')
+        +'\nNotes: '+(risk.notes||'—')
+        +'\nChanges: '+changes;
+    } catch(e) { showNotice('Could not load risk: '+e.message,'err'); if(spEl)spEl.style.display='none'; return; }
+  } else {
+    // localStorage fallback (insId::enqId)
+    var parts=ref.split('::'),insId=parts[0],enqId=parts[1];
+    var ent=entGetState(),ins=(ent.insureds||[]).find(function(i){return i.id===insId;}),enq=ins&&(ins.enquiries||[]).find(function(e){return e.id===enqId;});
+    if(!ins||!enq){showNotice('Account not found','err');if(spEl)spEl.style.display='none';return;}
+    var prod=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});
+    ctx='Insured: '+ins.name+'\nProducer: '+(prod?prod.name:'—')+'\nInception: '+(enq.inceptionDate||'—')+'\nExpiry: '+(enq.expiryDate||'—')+'\nRenewal inception: '+((document.getElementById('renewal-date')||{value:'TBC'}).value||'TBC')+'\nProduct: '+(enq.product||'Marine Cargo/STP')+'\nCurrency: '+(enq.currency||'USD')+'\nPremium: '+(enq.premium||'—')+'\nChanges: '+((document.getElementById('renewal-ctx')||{value:''}).value||'none specified');
+  }
+
+  var MRC_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking. Write an MRC renewal summary slip in plain text with ALL CAPS headers. Include: RENEWAL, INSURED, CEDANT, PERIOD, INTEREST, CONDITIONS, SUM INSURED, PREMIUM, BROKERAGE, CHANGES FROM EXPIRING, SUBJECTIVITIES.';
+  var SUB_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking writing a renewal market submission email. Story-first, reference the relationship and loss record. Plain text, Subject: line first, no markdown.';
+  var CLT_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking writing a renewal covering note to the producer or client. Professional and warm. Plain text only.';
+  var results=await Promise.all([callAI(MRC_SYS,ctx,1200),callAI(SUB_SYS,ctx,1000),callAI(CLT_SYS,ctx,800)]);
+  _rpDocs_new.mrc=results[0]||'(failed)';_rpDocs_new.sub=results[1]||'(failed)';_rpDocs_new.client=results[2]||'(failed)';
+  if(spEl)spEl.style.display='none';if(oc)oc.style.display='block';rpTab('mrc');showNotice('✓ Renewal pack generated','ok');
+}
 
 // Market Intel tabs
 function intelMode(m){['suggest','feedback','lessons','lostdeals'].forEach(function(x){var el=document.getElementById('intel-'+x+'-mode');if(el)el.style.display=x===m?'block':'none';var btn=document.getElementById('intel-tab-'+x);if(btn)btn.classList.toggle('active',x===m);});if(m==='feedback')renderFeedback();if(m==='lessons')renderLessons();if(m==='lostdeals')renderLostDeals();}
@@ -7868,7 +6935,7 @@ async function renderFxPanel(){
   const errEl = document.getElementById('fx-error');
   if(!panel) return;
 
-  const rows = fxGetFilteredRows();
+  const rows = await fxGetFilteredRows();
 
   // Split: locked = has gbpComm, estimated = has premium but no gbpComm
   const locked = rows.filter(r => r.gbpComm != null);
@@ -8048,7 +7115,7 @@ async function renderFxPanel(){
     (premLockedFlag?' · some locked rows estimated from today\'s rate':'') +
     (premEst>0?' · '+estimated.length+' unprocessed at live rate':'');
 }
-function runRecon(){
+async function runRecon(){
   const raw = (document.getElementById('recon-paste')||{value:''}).value.trim();
   if(!raw){ clearRecon(); return; }
 
@@ -8082,52 +7149,44 @@ function runRecon(){
     groups[key].periods.push(period.trim());
   }
 
-  // Get all entities to match against
-  const ent = entGetState();
-  const allEnquiries = [];
-  for(const ins of ent.insureds){
-    for(const enq of (ins.enquiries||[])){
-      if((enq.status||'').toLowerCase() !== 'bound') continue;
-      const incYear = (() => {
-        const p = (enq.inceptionDate||'').split('/');
-        return p.length === 3 ? parseInt(p[2]) : null;
-      })();
+  // P21: Get bound risks from PG instead of localStorage
+  var allEnquiries = [];
+  try {
+    var boundData = await apiFetch('/risks?status=bound&limit=500');
+    var risks = boundData.items || boundData || [];
+    for(var r of risks) {
+      var incYear = r.accounting_year || null;
+      if(!incYear && r.inception_date) {
+        var yp = r.inception_date.match(/(\d{4})/);
+        incYear = yp ? parseInt(yp[1]) : null;
+      }
       if(!incYear) continue;
-      // Calculate commission from placement if available, else use commission field
-      let toolCalc = null;
-      let calcNote = '';
-      if(enq.placement && enq.placement.layers && enq.placement.layers.length){
-        let total = 0;
-        for(const layer of enq.placement.layers){
-          const gp = parseFloat(layer.grossPremium) || 0;
-          const brok = parseFloat(layer.brokerage) || 0;
-          // retainedPct: check layer, then bookRows
-          let ret = parseFloat(layer.ogbRetainPct) || null;
-          if(!ret){
-            // check book rows for retainedPct
-            const bs = getBookState();
-            const matchRow = (bs.bookRows||[]).find(r => {
-              const rYear = (() => { const p2=(r.inceptionDate||'').split('/'); return p2.length===3?parseInt(p2[2]):null; })();
-              return rYear===incYear && (r.assured||'').toLowerCase().includes(ins.name.toLowerCase().substring(0,8));
-            });
-            ret = matchRow ? (parseFloat(matchRow.retainedPct)||null) : null;
-          }
-          if(ret != null){
-            total += gp * (brok/100) * (ret/100);
-            calcNote = `GP ${gp.toLocaleString()} × ${brok}% brok × ${ret}% retain`;
-          } else if(brok){
-            total += gp * (brok/100);
-            calcNote = `GP ${gp.toLocaleString()} × ${brok}% brok (retain% unknown)`;
-          }
-        }
-        toolCalc = total > 0 ? Math.round(total) : null;
+      var gp = parseFloat(r.gross_premium) || 0;
+      var brok = parseFloat(r.brokerage_pct) || 0;
+      var ret = parseFloat(r.retained_pct) || 100;
+      var toolCalc = null;
+      var calcNote = '';
+      if(gp && brok) {
+        toolCalc = Math.round(gp * (brok/100) * (ret/100));
+        calcNote = 'GP ' + gp.toLocaleString() + ' × ' + brok + '% brok × ' + ret + '% retain';
+      } else if(r.estimated_gbp_commission) {
+        toolCalc = parseFloat(r.estimated_gbp_commission);
+        calcNote = 'From estimated GBP commission';
+      } else if(r.locked_gbp_commission) {
+        toolCalc = parseFloat(r.locked_gbp_commission);
+        calcNote = 'From locked GBP commission';
       }
-      if(toolCalc == null && enq.commission){
-        toolCalc = parseFloat(enq.commission) || null;
-        calcNote = 'From commission field';
-      }
-      allEnquiries.push({ ins, enq, incYear, toolCalc, calcNote, ccy: (enq.currency||'USD').toUpperCase() });
+      allEnquiries.push({
+        name: r.assured_name || r.display_name || '',
+        incYear: incYear,
+        toolCalc: toolCalc,
+        calcNote: calcNote,
+        ccy: (r.currency || 'USD').toUpperCase()
+      });
     }
+  } catch(e) {
+    showNotice('Could not fetch bound risks: ' + e.message, 'err');
+    return;
   }
 
   // Match and compare
@@ -8135,12 +7194,11 @@ function runRecon(){
   const rows = [];
   for(const key of Object.keys(groups)){
     const g = groups[key];
-    // Find matching enquiry: insured name contains or matches, year matches, ccy matches
     const nameNorm = s => s.toLowerCase().replace(/limited|ltd|llc|inc|s\.a\.|plc|gmbh|\.|,/gi,'').trim();
     const matches = allEnquiries.filter(e =>
       e.incYear === g.year &&
       e.ccy === g.ccy &&
-      (nameNorm(e.ins.name).includes(nameNorm(g.insured)) || nameNorm(g.insured).includes(nameNorm(e.ins.name)))
+      (nameNorm(e.name).includes(nameNorm(g.insured)) || nameNorm(g.insured).includes(nameNorm(e.name)))
     );
     if(!matches.length){
       rows.push({ ...g, toolCalc: null, calcNote: '', status: 'unmatched', diff: null, diffPct: null });
@@ -8151,7 +7209,7 @@ function runRecon(){
       const diffPct = (toolCalc && toolCalc !== 0) ? (diff / toolCalc) : null;
       const status = toolCalc == null ? 'no-calc' :
                      Math.abs(diffPct) <= TOLERANCE ? 'match' : 'diff';
-      rows.push({ ...g, toolCalc, calcNote: best.calcNote, status, diff, diffPct, insuredTool: best.ins.name });
+      rows.push({ ...g, toolCalc, calcNote: best.calcNote, status, diff, diffPct, insuredTool: best.name });
     }
   }
 
@@ -8177,7 +7235,7 @@ function runRecon(){
     const fmtPct = n => n != null ? (n >= 0 ? '+' : '') + (n*100).toFixed(1)+'%' : '—';
     const diffColor = r.status==='match' ? 'var(--ok)' : r.status==='diff' ? 'var(--warn)' : '';
     const note = r.status==='unmatched' ? 'Not found in tool — check insured name spelling' :
-                 r.calcNote || (r.status==='no-calc' ? 'No placement data or commission field' : '');
+                 r.calcNote || (r.status==='no-calc' ? 'No premium/brokerage data on risk' : '');
 
     return `<tr>
       <td>${r.insuredTool||r.insured}</td>
@@ -8798,7 +7856,7 @@ async function loadCorrectionsBadge(riskId) {
 // =============================================================================
 
 function mi8Mode(m) {
-  ['scorecards','rules','interactions','add','addrule'].forEach(function(x) {
+  ['scorecards','recommend','rules','interactions','add','addrule','seed'].forEach(function(x) {
     var el = document.getElementById('mi8-' + x + '-mode');
     if (el) el.style.display = x === m ? 'block' : 'none';
     var btn = document.getElementById('mi8-tab-' + x);
@@ -8807,6 +7865,7 @@ function mi8Mode(m) {
   if (m === 'scorecards') renderMI8Scorecards();
   if (m === 'rules') renderMI8Rules();
   if (m === 'interactions') renderMI8Interactions();
+  if (m === 'recommend') {} // wait for user to click Search
 }
 
 async function renderMI8Scorecards() {
@@ -8975,4 +8034,235 @@ async function saveMI8Rule() {
     });
     mi8Mode('rules');
   } catch(e) { showNotice('Save failed: ' + e.message, 'err'); }
+}
+
+// P20: Who should I call? recommendation
+async function renderMI8Recommend() {
+  var el = document.getElementById('mi8-recommend-results');
+  if (!el) return;
+  var product = (document.getElementById('mi8-rec-product').value || '').trim();
+  var territory = (document.getElementById('mi8-rec-territory').value || '').trim();
+  if (!product && !territory) { showNotice('Enter at least a product or territory', 'err'); return; }
+  el.innerHTML = '<div class="muted">Searching market intelligence...</div>';
+  try {
+    var qs = new URLSearchParams();
+    if (product) qs.set('product', product);
+    if (territory) qs.set('territory', territory);
+    var data = await apiFetch('/market/recommend?' + qs.toString());
+
+    var html = '';
+
+    // Excluded underwriters warning
+    if (data.excluded && data.excluded.length) {
+      html += '<div style="margin-bottom:14px;padding:10px 14px;background:var(--err-bg);border:1px solid var(--err)30;border-radius:var(--radius)">'
+        + '<div style="font-size:11px;font-weight:700;color:var(--err);margin-bottom:4px">Excluded (hard rules on file)</div>'
+        + data.excluded.map(function(e){ return '<div style="font-size:11px;color:var(--err)"><strong>' + escapeHtml(e.underwriter) + '</strong> — ' + escapeHtml(e.reason) + '</div>'; }).join('')
+        + '</div>';
+    }
+
+    // Recommendations
+    if (!data.recommendations || !data.recommendations.length) {
+      html += '<div class="muted">No market data for this combination. Log interactions to build recommendations.</div>';
+    } else {
+      html += '<div style="display:grid;gap:10px">';
+      data.recommendations.forEach(function(r, idx) {
+        var scoreCol = r.score >= 60 ? 'var(--ok)' : r.score >= 35 ? 'var(--warn)' : 'var(--text2)';
+        var rank = idx + 1;
+        var contactList = (r.contacts || []).filter(Boolean).slice(0, 3).join(', ');
+
+        // Score breakdown bar
+        var maxBar = 100;
+        var appW = Math.round(r.appetite_score / maxBar * 100);
+        var effW = Math.round(r.efficiency_score / maxBar * 100);
+        var relW = Math.round(r.relationship_score / maxBar * 100);
+
+        html += '<div class="card" style="padding:14px 16px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+          + '<div style="display:flex;align-items:center;gap:10px">'
+          + '<span style="width:24px;height:24px;border-radius:50%;background:' + scoreCol + '20;color:' + scoreCol + ';display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">' + rank + '</span>'
+          + '<div><div style="font-size:13px;font-weight:700">' + escapeHtml(r.underwriter) + '</div>'
+          + (contactList ? '<div style="font-size:10px;color:var(--text2)">' + escapeHtml(contactList) + '</div>' : '')
+          + '</div></div>'
+          + '<div style="text-align:right">'
+          + '<div style="font-size:18px;font-weight:800;color:' + scoreCol + '">' + r.score + '</div>'
+          + '<div style="font-size:9px;color:var(--text3)">/ 100</div>'
+          + '</div></div>'
+          // Score breakdown
+          + '<div style="display:flex;gap:4px;height:6px;border-radius:3px;overflow:hidden;margin-bottom:6px">'
+          + '<div style="width:' + appW + '%;background:#3b82f6" title="Appetite: ' + r.appetite_score + '"></div>'
+          + '<div style="width:' + effW + '%;background:#f59e0b" title="Efficiency: ' + r.efficiency_score + '"></div>'
+          + '<div style="width:' + relW + '%;background:#10b981" title="Relationship: ' + r.relationship_score + '"></div>'
+          + '</div>'
+          + '<div style="display:flex;gap:12px;font-size:10px;color:var(--text2);margin-bottom:6px">'
+          + '<span style="color:#3b82f6">■ Appetite ' + r.appetite_score + '</span>'
+          + '<span style="color:#f59e0b">■ Efficiency ' + r.efficiency_score + '</span>'
+          + '<span style="color:#10b981">■ Relationship ' + r.relationship_score + '</span>'
+          + '</div>'
+          // Detail line
+          + '<div style="font-size:11px;color:var(--text2)">'
+          + (r.wrote_line ? r.wrote_line + ' line' + (r.wrote_line > 1 ? 's' : '') + ' written' : 'No lines written')
+          + (r.avg_line_pct ? ' · avg ' + r.avg_line_pct + '%' : '')
+          + (r.avg_response_hours ? ' · ~' + r.avg_response_hours + 'h response' : '')
+          + (r.favour_balance > 0 ? ' · <span style="color:var(--ok)">+' + r.favour_balance + ' favour' + (r.favour_balance > 1 ? 's' : '') + ' owed</span>' : '')
+          + '</div>'
+          // Reason
+          + '<div style="font-size:10px;color:var(--text3);margin-top:4px;font-style:italic">' + escapeHtml(r.reason) + '</div>'
+          + '</div>';
+      });
+      html += '</div>';
+    }
+
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<div class="notice err">Failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// =============================================================================
+// P21: Seed market_interactions from known placement data
+// =============================================================================
+
+async function seedPPAQ() {
+  var el = document.getElementById('mi8-seed-result');
+  if (el) el.innerHTML = '<div class="muted">Seeding PPAQ placement data...</div>';
+  var interactions = [
+    // Primary $75M — wrote_line
+    {underwriter:"Aviva",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:20,interaction_date:"2024-12-23",decisiveness:"decisive",response_speed_hours:48,notes:"PPAQ Primary $75M — 20% lead. Maple syrup bulk in hermetically sealed steel drums.",source:"seed"},
+    {underwriter:"Allied World",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:7.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ Primary $75M — 7.5% follow.",source:"seed"},
+    {underwriter:"Antares",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:7.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ Primary $75M — 7.5% follow.",source:"seed"},
+    {underwriter:"AXIS",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:12.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ Primary $75M — 12.5% follow.",source:"seed"},
+    {underwriter:"Brit",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:17.5,interaction_date:"2024-12-23",decisiveness:"slow_but_clear",notes:"PPAQ Primary $75M — 17.5% follow. Lead condition resolved — accepted follow line.",source:"seed"},
+    {underwriter:"Everest",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:17.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ Primary $75M — 17.5% follow.",source:"seed"},
+    {underwriter:"Fidelis",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:17.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ Primary $75M — 17.5% follow. Also on 1st XS 32.5%.",source:"seed"},
+    // 1st XS $100M xs $75M — wrote_line
+    {underwriter:"Talbot",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:15,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ 1st XS $100M xs $75M — 15% lead.",source:"seed"},
+    {underwriter:"Ark",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:7.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ 1st XS $100M xs $75M — 7.5% follow.",source:"seed"},
+    {underwriter:"CNA Hardy",contact_name:"James Killingback",syndicate:"382",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:10,interaction_date:"2024-12-23",decisiveness:"decisive",response_speed_hours:4,notes:"PPAQ 1st XS $100M xs $75M — 10% follow. Fast mover, confirmed valid to inception.",source:"seed"},
+    {underwriter:"Fidelis",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:32.5,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ 1st XS $100M xs $75M — 32.5% follow. Largest single line on XS layer.",source:"seed"},
+    {underwriter:"IQUW",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:15,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ 1st XS $100M xs $75M — 15% follow.",source:"seed"},
+    {underwriter:"Lancashire",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:10,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ 1st XS $100M xs $75M — 10% follow.",source:"seed"},
+    {underwriter:"Westfield",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Canada",line_pct:10,interaction_date:"2024-12-23",decisiveness:"decisive",notes:"PPAQ 1st XS $100M xs $75M — 10% follow.",source:"seed"},
+    // Declines
+    {underwriter:"Canopius",contact_name:"Balca Gursoy",syndicate:"4444",interaction_type:"declined",product:"STP",territory:"Canada",line_pct:null,interaction_date:"2024-12-15",decisiveness:"decisive",response_speed_hours:24,decline_type:"hard_rule",decline_reason:"Cannot do excess stock — minimum premium makes excess unworkable, won't take larger line to sign down",notes:"Seen STP last year. Hard rule on excess stock layers.",source:"seed"},
+    {underwriter:"Beazley",contact_name:"Debbie Hand",syndicate:"",interaction_type:"ghosted",product:"STP",territory:"Canada",line_pct:null,interaction_date:"2024-12-18",decisiveness:"ghosted",decline_type:"no_response",decline_reason:"Out of office — forwarded to Elliott Markham/George Duckett, no response before lines locked",notes:"OOO during placement window. No response from deputies.",source:"seed"}
+  ];
+  var rules = [
+    {underwriter:"Canopius",syndicate:"4444",product:"STP",territory:"",exclusion:"Cannot do excess stock — minimum premium makes excess unworkable",notes:"From PPAQ 1st XS decline Dec 2024"}
+  ];
+  try {
+    var data = await apiFetch('/market/seed', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({interactions:interactions,rules:rules})
+    });
+    if (el) el.innerHTML = '<div class="notice ok">PPAQ seeded: ' + data.inserted_interactions + ' interactions inserted, ' + data.skipped_interactions + ' skipped. ' + data.inserted_rules + ' rules inserted, ' + data.skipped_rules + ' skipped.</div>';
+    showNotice('PPAQ seed complete','ok');
+  } catch(e) {
+    if (el) el.innerHTML = '<div class="notice err">Seed failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function seedEkol() {
+  var el = document.getElementById('mi8-seed-result');
+  if (el) el.innerHTML = '<div class="muted">Seeding Ekol placement data...</div>';
+  // Ekol Lojistik — largest single risk (£405k), STP, Turkey, renews December
+  // Integra panel — Aviva typically leads Turkey business
+  var interactions = [
+    {underwriter:"Aviva",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:20,interaction_date:"2024-12-01",decisiveness:"decisive",response_speed_hours:24,notes:"Ekol Lojistik STP renewal — lead line. £405k GWP. Largest OGB risk.",source:"seed"},
+    {underwriter:"Brit",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:15,interaction_date:"2024-12-01",decisiveness:"decisive",notes:"Ekol Lojistik STP renewal — follow.",source:"seed"},
+    {underwriter:"AXIS",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:10,interaction_date:"2024-12-01",decisiveness:"decisive",notes:"Ekol Lojistik STP renewal — follow.",source:"seed"},
+    {underwriter:"Fidelis",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:15,interaction_date:"2024-12-01",decisiveness:"decisive",notes:"Ekol Lojistik STP renewal — follow.",source:"seed"},
+    {underwriter:"Everest",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:12.5,interaction_date:"2024-12-01",decisiveness:"decisive",notes:"Ekol Lojistik STP renewal — follow.",source:"seed"},
+    {underwriter:"CNA Hardy",contact_name:"James Killingback",syndicate:"382",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:10,interaction_date:"2024-12-01",decisiveness:"decisive",response_speed_hours:8,notes:"Ekol Lojistik STP renewal — follow. Reliable on Turkey.",source:"seed"},
+    {underwriter:"Antares",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:7.5,interaction_date:"2024-12-01",decisiveness:"decisive",notes:"Ekol Lojistik STP renewal — follow.",source:"seed"},
+    {underwriter:"Talbot",contact_name:"",syndicate:"",interaction_type:"wrote_line",product:"STP",territory:"Turkey",line_pct:10,interaction_date:"2024-12-01",decisiveness:"decisive",notes:"Ekol Lojistik STP renewal — follow.",source:"seed"}
+  ];
+  try {
+    var data = await apiFetch('/market/seed', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({interactions:interactions,rules:[]})
+    });
+    if (el) el.innerHTML = '<div class="notice ok">Ekol seeded: ' + data.inserted_interactions + ' interactions inserted, ' + data.skipped_interactions + ' skipped.</div>';
+    showNotice('Ekol seed complete','ok');
+  } catch(e) {
+    if (el) el.innerHTML = '<div class="notice err">Seed failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+
+// =============================================================================
+// P21: Extract market feedback from email (manual paste)
+// =============================================================================
+
+async function extractMarketFeedback() {
+  var body = (document.getElementById('mi8-extract-body').value || '').trim();
+  if (!body) { showNotice('Paste an email body first', 'err'); return; }
+  var el = document.getElementById('mi8-extract-result');
+  if (el) el.innerHTML = '<div class="muted">Extracting market feedback...</div>';
+  var payload = {
+    email_body: body,
+    product: (document.getElementById('mi8-extract-prod').value || '').trim() || null,
+    territory: (document.getElementById('mi8-extract-terr').value || '').trim() || null,
+    risk_id: parseInt(document.getElementById('mi8-extract-risk').value) || null
+  };
+  try {
+    var data = await apiFetch('/market/extract-feedback', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if (!data.extracted) {
+      if (el) el.innerHTML = '<div class="muted">No market feedback found in this email.</div>';
+      return;
+    }
+    var html = '<div class="notice ok">Extracted ' + data.extracted + ' interaction' + (data.extracted > 1 ? 's' : '') + '</div>';
+    html += '<div style="margin-top:8px;display:grid;gap:6px">';
+    (data.interactions || []).forEach(function(ix) {
+      var typeCol = ix.interaction_type === 'wrote_line' ? 'var(--ok)' : ix.interaction_type === 'declined' ? 'var(--err)' : 'var(--accent)';
+      html += '<div class="card" style="padding:10px 14px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center">'
+        + '<div style="font-size:12px;font-weight:700">' + escapeHtml(ix.underwriter || '') + '</div>'
+        + '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + typeCol + '15;color:' + typeCol + '">' + escapeHtml(ix.interaction_type || '') + '</span>'
+        + '</div>'
+        + (ix.line_pct ? '<div style="font-size:11px;color:var(--text2)">Line: ' + ix.line_pct + '%</div>' : '')
+        + (ix.contact_name ? '<div style="font-size:11px;color:var(--text2)">Contact: ' + escapeHtml(ix.contact_name) + '</div>' : '')
+        + (ix.decline_reason ? '<div style="font-size:11px;color:var(--err)">' + escapeHtml(ix.decline_reason) + '</div>' : '')
+        + (ix.notes ? '<div style="font-size:10px;color:var(--text3);margin-top:4px">' + escapeHtml(ix.notes) + '</div>' : '')
+        + '</div>';
+    });
+    html += '</div>';
+    if (el) el.innerHTML = html;
+    showNotice(data.extracted + ' interaction' + (data.extracted > 1 ? 's' : '') + ' extracted and saved', 'ok');
+  } catch(e) {
+    if (el) el.innerHTML = '<div class="notice err">Extraction failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+
+// =============================================================================
+// P21: Auto-extract market feedback from workflow emails classified as 'feedback'
+// =============================================================================
+
+async function autoExtractMarketFeedback(riskId, emailBody, emailDate, product, territory, entityId) {
+  if (!emailBody) return;
+  try {
+    var data = await apiFetch('/market/extract-feedback', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        email_body: emailBody,
+        risk_id: riskId,
+        entity_id: entityId || null,
+        email_date: emailDate || null,
+        product: product || null,
+        territory: territory || null
+      })
+    });
+    if (data.extracted > 0) {
+      showNotice(data.extracted + ' market interaction' + (data.extracted > 1 ? 's' : '') + ' auto-extracted', 'ok');
+    }
+  } catch(e) {
+    console.warn('Auto market extraction failed:', e.message);
+  }
 }

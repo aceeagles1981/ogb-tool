@@ -16,7 +16,7 @@
     </div>
     <div>
       <div style="font-size:13px;font-weight:700;color:#fff;line-height:1.2;letter-spacing:-0.01em">OG Broking</div>
-      <div style="font-size:10px;color:var(--text3);line-height:1.2;color:rgba(255,255,255,0.4);font-size:10px">Placement Tool &nbsp;·&nbsp; <span style="font-family:var(--font-mono)">v19.0 · 18 Apr 2026</span></div>
+      <div style="font-size:10px;color:var(--text3);line-height:1.2;color:rgba(255,255,255,0.4);font-size:10px">Placement Tool &nbsp;·&nbsp; <span style="font-family:var(--font-mono)">v21.0 · 18 Apr 2026</span></div>
     </div>
   </div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:rgba(255,255,255,0.4)">
@@ -254,70 +254,17 @@
     </div>
 
     <div style="padding:0 32px 8px;max-width:1100px;margin:0 auto">
-      <div class="card" style="padding:18px 20px">
-        <!-- Header -->
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <div class="card" style="padding:18px 20px;cursor:pointer" onclick="tab('ingest')">
+        <div style="display:flex;align-items:center;gap:10px">
           <div style="width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#3D3B36,#5F5D58);display:flex;align-items:center;justify-content:center;flex-shrink:0">
             <svg width="17" height="17" viewBox="0 0 32 32" fill="none" stroke="#fff" stroke-width="1.8"><rect x="4" y="6" width="24" height="20" rx="3"/><path d="M10 13h12M10 18h8" stroke-linecap="round"/><path d="M22 2v8M18 7l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
-          <div>
+          <div style="flex:1">
             <div style="font-size:13px;font-weight:700;color:var(--text)">Email Ingest</div>
-            <div class="muted">Drop a .msg file — AI writes a structured account note you review and save</div>
+            <div class="muted">Drop .msg files for AI extraction, workflow generation, and risk creation</div>
           </div>
-          <button class="btn" onclick="tab('ingest')" style="margin-left:auto;font-size:11px;flex-shrink:0;white-space:nowrap">Batch ↗</button>
+          <div style="font-size:12px;color:var(--text2);font-weight:600;white-space:nowrap">Open ↗</div>
         </div>
-
-        <!-- Drop zone (hidden when result showing) -->
-        <div id="hi-drop-area">
-          <div id="hi-dz"
-            ondragover="event.preventDefault();document.getElementById('hi-dz').classList.add('over')"
-            ondragleave="document.getElementById('hi-dz').classList.remove('over')"
-            ondrop="document.getElementById('hi-dz').classList.remove('over');hiDrop(event)"
-            onclick="document.getElementById('hi-fi').click()"
-            style="border:2px dashed var(--border2);border-radius:var(--radius);padding:24px 20px;text-align:center;cursor:pointer;transition:all 0.15s">
-            <input type="file" id="hi-fi" accept=".msg,.eml,.txt" style="display:none" onchange="hiFile(this.files)">
-            <div style="font-size:28px;margin-bottom:6px">📨</div>
-            <div id="hi-dz-label" style="font-size:13px;font-weight:600;color:var(--text)">Drop .msg file here</div>
-            <div class="muted" style="margin-top:3px;font-size:11px">or click to browse</div>
-          </div>
-          <div id="hi-processing" style="display:none;margin-top:8px" class="notice info">
-            <span class="spin"></span> <span id="hi-proc-msg">Parsing email...</span>
-          </div>
-        </div>
-
-        <!-- Result (hidden until AI returns) -->
-        <div id="hi-result" style="display:none">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-bottom:12px">
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">DATE</div><input type="text" id="hi-date" style="font-size:12px"></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">HANDLER</div><input type="text" id="hi-handler" placeholder="KE / EW / MM / JK" style="font-size:12px"></div>
-            <div style="grid-column:1/-1"><div class="muted" style="font-size:10px;margin-bottom:3px">PARTIES</div><input type="text" id="hi-parties" style="font-size:12px"></div>
-            <div style="grid-column:1/-1"><div class="muted" style="font-size:10px;margin-bottom:3px">SUMMARY</div><textarea id="hi-summary" rows="3" style="font-size:12px;resize:vertical"></textarea></div>
-            <div style="grid-column:1/-1"><div class="muted" style="font-size:10px;margin-bottom:3px">ACTIONS</div><textarea id="hi-actions" rows="2" style="font-size:12px;resize:vertical"></textarea></div>
-            <div><div class="muted" style="font-size:10px;margin-bottom:3px">STATUS CHANGE</div><input type="text" id="hi-status" placeholder="e.g. Quoted to Bound" style="font-size:12px"></div>
-          </div>
-
-          <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:12px">
-            <div style="font-size:12px;font-weight:600;margin-bottom:8px">Assign to account</div>
-            <div id="hi-match-badge" style="margin-bottom:8px"></div>
-            <div class="fg"><label>Insured</label>
-              <select id="hi-insured-select" onchange="hiPopulateEnquiry(this.value)" style="font-size:12px">
-                <option value="">— select insured —</option>
-              </select>
-            </div>
-            <div class="fg" style="margin-top:6px"><label>Enquiry / inception</label>
-              <select id="hi-enquiry-select" style="font-size:12px">
-                <option value="">— select —</option>
-              </select>
-            </div>
-          </div>
-
-          <div style="display:flex;gap:8px">
-            <button class="btn primary" onclick="hiSave()">Save note ↗</button>
-            <button class="btn" onclick="hiReset()">Discard</button>
-          </div>
-        </div>
-
-        <div id="hi-saved" style="display:none;margin-top:8px" class="notice ok"></div>
       </div>
     </div>
 
@@ -1956,10 +1903,12 @@
   <!-- Sub-tabs -->
   <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">
     <button class="btn sm active" id="mi8-tab-scorecards" onclick="mi8Mode('scorecards')">Scorecards</button>
+    <button class="btn sm" id="mi8-tab-recommend" onclick="mi8Mode('recommend')">Who to call</button>
     <button class="btn sm" id="mi8-tab-rules" onclick="mi8Mode('rules')">Market rules</button>
     <button class="btn sm" id="mi8-tab-interactions" onclick="mi8Mode('interactions')">Interactions</button>
     <button class="btn sm" id="mi8-tab-add" onclick="mi8Mode('add')">+ Log interaction</button>
     <button class="btn sm" id="mi8-tab-addrule" onclick="mi8Mode('addrule')">+ Add rule</button>
+    <button class="btn sm" id="mi8-tab-seed" onclick="mi8Mode('seed')" style="margin-left:auto;color:var(--text3)">⚙ Seed data</button>
   </div>
 
   <!-- Scorecards -->
@@ -2067,8 +2016,46 @@
       <div style="margin-top:12px"><button class="btn primary" onclick="saveMI8Rule()">Save rule</button></div>
     </div>
   </div>
-</div>
 
+  <!-- Recommend (P20) -->
+  <div id="mi8-recommend-mode" style="display:none">
+    <div class="card" style="padding:16px">
+      <div class="sh" style="font-size:12px;margin-bottom:8px">Who should I call?</div>
+      <p class="muted" style="margin-bottom:12px">Enter a product and territory to get ranked underwriter recommendations based on appetite, efficiency, and relationship data.</p>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:flex-end">
+        <div><label style="font-size:11px;color:var(--text2)">Product *</label><input type="text" id="mi8-rec-product" placeholder="STP / MC / WHLL" style="font-size:12px;width:140px"></div>
+        <div><label style="font-size:11px;color:var(--text2)">Territory</label><input type="text" id="mi8-rec-territory" placeholder="Turkey / Panama / UK" style="font-size:12px;width:140px"></div>
+        <button class="btn primary" onclick="renderMI8Recommend()">Search</button>
+      </div>
+      <div id="mi8-recommend-results"></div>
+    </div>
+  </div>
+
+  <!-- Seed data (P21) -->
+  <div id="mi8-seed-mode" style="display:none">
+    <div class="card" style="padding:16px">
+      <div class="sh" style="font-size:12px;margin-bottom:8px">Seed Market Data</div>
+      <p class="muted" style="margin-bottom:12px">Populate market intelligence from known placement data. Idempotent — safe to run multiple times (duplicates are skipped).</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" onclick="seedPPAQ()">Seed PPAQ placement</button>
+        <button class="btn" onclick="seedEkol()">Seed Ekol placement</button>
+      </div>
+      <div id="mi8-seed-result" style="margin-top:12px"></div>
+    </div>
+    <div class="card" style="padding:16px;margin-top:12px">
+      <div class="sh" style="font-size:12px;margin-bottom:8px">Extract Market Feedback from Email</div>
+      <p class="muted" style="margin-bottom:12px">Paste an email containing market responses (indications, declines, lines written) and AI will extract structured interactions.</p>
+      <textarea id="mi8-extract-body" rows="6" placeholder="Paste email body here..." style="width:100%;font-size:12px"></textarea>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+        <div><label style="font-size:11px;color:var(--text2)">Product</label><input type="text" id="mi8-extract-prod" placeholder="STP" style="width:100%"></div>
+        <div><label style="font-size:11px;color:var(--text2)">Territory</label><input type="text" id="mi8-extract-terr" placeholder="Canada" style="width:100%"></div>
+        <div><label style="font-size:11px;color:var(--text2)">Risk ID</label><input type="number" id="mi8-extract-risk" placeholder="Optional" style="width:100%"></div>
+      </div>
+      <div style="margin-top:10px"><button class="btn primary" onclick="extractMarketFeedback()">Extract feedback</button></div>
+      <div id="mi8-extract-result" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
 
 <!-- SLIP LIBRARY -->
 <div id="sliplib" class="panel">
@@ -2410,11 +2397,9 @@
       <div id="export-notice" style="display:none;font-size:11px;font-weight:600;margin-top:6px"></div>
       <div id="data-summary" style="font-size:11px;color:var(--text2);margin-top:6px"></div>
     </div>
-    <div style="background:var(--bg);border-radius:8px;padding:16px;margin-bottom:14px;border:1px solid var(--border)">
-      <div style="font-size:12px;font-weight:600;margin-bottom:6px">Migrate entities to PostgreSQL</div>
-      <div style="font-size:11px;color:var(--text2);margin-bottom:10px">Copies all localStorage insureds, producers, and notes to the backend database. Existing entities won't be duplicated. Risks will be auto-linked by name match.</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" onclick="migrateEntitiesToPG()">🚀 Migrate now</button><button class="btn" onclick="previewMigration()">Preview</button></div>
-      <div id="migrate-notice" style="display:none;margin-top:8px;font-size:11px"></div>
+    <div style="background:var(--ok-bg);border-radius:8px;padding:12px 16px;margin-bottom:14px;border:1px solid var(--ok)30">
+      <div style="font-size:12px;font-weight:600;color:var(--ok)">✓ Migration complete</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px">151 entities (34 producers, 117 insureds) migrated to PostgreSQL. All entity data now lives in PG.</div>
     </div>
     <div style="background:var(--bg);border-radius:8px;padding:16px;border:1px solid var(--border)">
       <div style="font-size:12px;font-weight:600;margin-bottom:8px">Import</div>
@@ -2467,7 +2452,7 @@
 
 
 
-<script src="js/compliance.js"></script>
+<!-- removed P20: compliance.js (localStorage legacy, PG compliance-screen replaces) -->
 
 
 <!-- ── Data Export / Import Modal ─────────────────────────────────────── -->
@@ -2557,7 +2542,7 @@
 
 <!-- removed: autocompliance.js (PG equivalent in backend /compliance-screen) -->
 
-<script src="js/legalverify.js"></script>
+<!-- removed P20: legalverify.js (localStorage legacy) -->
 
 <!-- removed: autotick.js (PG equivalent in backend /auto-tick) -->
 
