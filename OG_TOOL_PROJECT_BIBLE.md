@@ -1,5 +1,5 @@
 # OG Broking Placement Tool — Project Bible
-**Last updated: Part 21, 18 Apr 2026 · Build v21.0**
+**Last updated: Part 22, 18 Apr 2026 · Build v22.0**
 
 ---
 
@@ -12,7 +12,7 @@ Frontend is plain HTML/CSS/JS (no framework) deployed on Netlify. Backend is Pyt
 **Live URL:** https://ogbcargotool.netlify.app
 **Backend:** https://og-backend-production.up.railway.app
 **GitHub:** https://github.com/aceeagles1981/ogb-tool (public)
-**Current build:** v21.0 · 18 Apr 2026
+**Current build:** v22.0 · 18 Apr 2026
 
 ---
 
@@ -59,19 +59,19 @@ Frontend is plain HTML/CSS/JS (no framework) deployed on Netlify. Backend is Pyt
 ### Frontend (Netlify)
 ```
 frontend/
-  index.html              (2,565 lines — v21.0)
+  index.html              (2,482 lines — v22.0)
   css/app.css
   js/
-    main.js               (8,277 lines — core app, pipeline, accounts, entities, ingest, post-bind, MI, P7, P8 seed+extract+recommend, company research)
+    main.js               (8,352 lines — core app, pipeline, accounts, entities, ingest, post-bind, MI, P7, P8, ledger CRUD. Zero entGetState callers.)
     workflow.js            (991 lines — workflow UI, tabbed card, save, apply, auto-compliance, auto-tick, auto-market-extract)
     comparison.js          (255 lines — terms comparison UI)
     extensions.js          (444 lines — CW improvements, RTB)
-    patches.js             (156 lines — AP/RP summary)
-    dataexport.js          (120 lines — data export/import)
+    patches.js             (135 lines — AP/RP summary, PG-backed via /mi/ledger-summary)
     seeds.js               (5 lines — seed data loader)
     projectcargo.js        (142 lines — project cargo checklist)
 ```
 **Removed (script tags removed, files remain in repo):**
+- dataexport.js (120 lines) — removed Part 22, PG-backed equivalents in main.js
 - compliance.js (164 lines) — removed Part 20, PG compliance-screen replaces
 - legalverify.js (208 lines) — removed Part 20, PG entity card replaces
 - autocompliance.js (79 lines) — removed Part 19, PG equivalent in backend
@@ -82,7 +82,7 @@ All scripts load via `<script src>` tags in index.html. All share `window` scope
 ### Backend (Railway)
 ```
 backend/
-  app.py                  (3,919 lines — Flask, CORS, auth, risk/task/ledger/entity CRUD, compliance, auto-tick, cleanup, MI, P7, P8 seed+extract+recommend, company research, duplicate detection)
+  app.py                  (3,939 lines — Flask, CORS, auth, risk/task/ledger CRUD+delete, entity CRUD, compliance, auto-tick, cleanup, MI, P7, P8, company research, duplicate detection)
   doc_extract.py          (499 lines — AI extraction + classification prompts)
   workflow.py             (395 lines — workflow endpoint + output generation)
   comparison.py           (646 lines — terms comparison across market quotes)
@@ -155,17 +155,17 @@ users              — id, name, username, email, role, is_active, created_at
 - `ADMIN_TOKEN` — shared secret for frontend-backend auth
 - `FRONTEND_ORIGIN` — `https://ogbcargotool.netlify.app` (CORS)
 
-### localStorage Keys (legacy — fallback only, no primary user flows)
+### localStorage Keys (non-entity data only — entities fully in PG since Part 22)
 | Key | Contents |
 |-----|----------|
-| `og_state_v4` | Legacy entities, placements, book rows, CW risks, contacts, clause/slip library, proposal form, SOV |
+| `og_state_v4` | Book rows, CW risks, contacts, clause/slip library, proposal form, SOV. **Entities key exists but is never read.** |
 | `og_admin_token_v1` | Railway admin token |
 | `og_fx_rates_v1` | FX rates cache |
 | `og_pc_checked` | Project cargo checklist state |
 
 ---
 
-## 4. Data Architecture (Post Part 21)
+## 4. Data Architecture (Post Part 22)
 
 ### Entity Hierarchy
 ```
@@ -191,9 +191,11 @@ Producer (entity_type='producer')
 | Renewals view | PostgreSQL (mi/renewals, risks) | ✅ Primary |
 | Book view + FX panel | PostgreSQL (/portfolio-by-year) | ✅ Primary (Part 21) |
 | Renewal pack generator | PostgreSQL (/risks) | ✅ Primary (Part 21) |
+| Data export (entities) | PostgreSQL (fetchEntityList API) | ✅ Primary (Part 22) |
 | Cargo war blotter | localStorage | Legacy |
 | Contacts / address book | localStorage | Legacy |
 | Clause library, slip library | localStorage | Legacy |
+| Book rows (manual) | localStorage | Legacy |
 | Proposal form, SOV | localStorage | Legacy |
 | FX rates cache | localStorage | Cache |
 
@@ -201,9 +203,9 @@ Producer (entity_type='producer')
 - 151 entities migrated from localStorage → PG (34 producers, 117 insureds)
 - 34 notes migrated, 56 risks auto-linked
 - Migration code removed (Part 21) — completion banner in Data Export panel
-- **No localStorage entity reads remain in any primary user flow**
-- ~12 remaining `entGetState()` calls are in backup/export and graceful fallbacks
+- **`entGetState()`/`entSave()` fully eliminated (Part 22)** — zero localStorage entity reads in any code path
 - Legacy entity card (`_legacyEntOpenCard`) removed entirely (Part 21)
+- Export/import rewritten to fetch entities from PG API (Part 22)
 
 ---
 
@@ -254,6 +256,7 @@ Producer (entity_type='producer')
 | GET | `/mi/summary` | Status breakdown, conversion, velocity, handlers, yearly commission, entity_counts |
 | GET | `/mi/renewals` | 30/60/90 day renewals, retention, revenue at risk |
 | GET | `/mi/producer-performance` | Per-producer metrics from entity hierarchy |
+| GET | `/mi/ledger-summary` | **P22:** AP/RP summary across all risks with ledger entries, optional year filter |
 
 ### Risk Endpoints
 | Method | Path | Purpose |
@@ -263,6 +266,9 @@ Producer (entity_type='producer')
 | GET | `/risks/:id` | Joins entity name + producer entity name |
 | GET | `/risks` | Joins entity names |
 | POST | `/risks/cleanup` | Bulk delete junk risks by criteria |
+| GET | `/risks/:id/ledger` | List ledger entries for risk |
+| POST | `/risks/:id/ledger` | Create ledger entry (original/ap/rp/pc/adj) |
+| DELETE | `/risks/:id/ledger/:entry_id` | **P22:** Delete ledger entry with audit log |
 
 ### Ingest
 | Method | Path | Purpose |
@@ -294,6 +300,15 @@ Producer (entity_type='producer')
 | `togglePostBindField(riskId, field, value)` | PATCH toggle booleans/dates |
 | `buildComplianceBadgeHtml(risk)` | Compliance badge (CLEAR/REVIEW/DECLINE) |
 | `runComplianceScreen(riskId)` | Manual compliance re-screen |
+
+### Ledger CRUD (main.js — P22)
+| Function | Purpose |
+|----------|---------|
+| `fetchRiskLedger(riskId)` | GET /risks/:id/ledger → returns entries array |
+| `buildLedgerHtml(riskId, entries)` | Full ledger card: summary tiles, table, add form, delete buttons |
+| `toggleLedgerForm(riskId)` | Show/hide inline add form |
+| `addLedgerEntry(riskId)` | POST new entry from form fields, refreshes risk card |
+| `deleteLedgerEntry(riskId, entryId)` | DELETE entry with confirm, refreshes risk card |
 
 ### P7: Corrections (main.js)
 | Function | Purpose |
@@ -339,6 +354,7 @@ Producer (entity_type='producer')
 | `renderBook()` | Async. Fetches /portfolio-by-year |
 | `fxGetFilteredRows()` | **P21:** Async. Fetches /portfolio-by-year (was localStorage merge) |
 | `renderFxPanel()` | Async. FX conversion panel using PG portfolio data |
+| `runRecon()` | **P21:** Async. Reconciles pasted Integra data against PG bound risks |
 
 ### Renewal Pack (main.js — PG-backed, Part 21)
 | Function | Purpose |
@@ -357,8 +373,10 @@ Producer (entity_type='producer')
 | `apiFetch(path, options)` | main.js | Authenticated fetch to Railway backend |
 | `fetchRiskList(params)` | main.js | GET /risks with filters |
 | `fetchTaskList(params)` | main.js | GET /tasks with filters |
-| `gs()` / `ss(s)` | main.js | Get/save localStorage state |
-| `entGetState()` / `entSave(ent)` | main.js | Get/save localStorage entities (legacy — ~12 remaining callers, all backup/fallback) |
+| `fetchEntityList(params)` | main.js | GET /entities with filters |
+| `gs()` / `ss(s)` | main.js | Get/save localStorage state (bookRows, CW, contacts, clauses only) |
+
+**Part 22: `entGetState()`/`entSave()` deleted.** Zero localStorage entity reads remain.
 
 ### Status Handling
 **Canonical statuses:** `submission`, `in_market`, `quoted`, `firm_order`, `bound`, `renewal_pending`, `expired_review`, `closed_ntu`
@@ -447,11 +465,11 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 
 ### Pre-Present Checklist
 1. `node --check` on every modified JS file
-2. `python3 -c "import py_compile; py_compile.compile('backend/app.py', doraise=True)"`
+2. `python3 -c "import py_compile; py_compile.compile('backend/app.py                  (4,003 lines — +64: DELETE ledger, GET /mi/ledger-summary)
 3. Grep for the fix — confirm present in output
 4. HTML ends with `</body>\n</html>`
 5. Check `var`/`const` collisions for top-level declarations
-6. Verify files in `frontend/` not repo root (and root `app.py` matches `backend/app.py`)
+6. Verify files in `frontend/` not repo root (and root `app.py` matches `backend/app.py                  (4,003 lines — +64: DELETE ledger, GET /mi/ledger-summary)
 
 ---
 
@@ -481,6 +499,11 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 | Company research | ✅ | **P21:** AI research → PG entity note |
 | Duplicate entity detection | ✅ | **P21:** Trigram similarity via PG |
 | Entity migration | ✅ | Complete. 151 entities. Migration code removed. |
+| entGetState/entSave eliminated | ✅ | **P22:** Zero localStorage entity reads in any code path |
+| Data export from PG | ✅ | **P22:** All entity exports fetch from PG API |
+| Ledger CRUD on risk card | ✅ | **P22:** Summary tiles, add form, delete, running totals |
+| dataexport.js removed | ✅ | **P22:** Was broken (called deleted entGetState), duplicate modal removed |
+| AP/RP Summary panel PG-backed | ✅ | **P22:** patches.js rewritten to use /mi/ledger-summary |
 | Junk risk cleanup | ✅ | Preview + delete by criteria |
 | Done tasks visual styling | ✅ | Opacity, strikethrough, ✓ replaces Done button |
 | Rate limit debounce | ✅ | Per-task guard prevents rapid-click 429s |
@@ -495,8 +518,7 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 
 1. **N/R and Quote Leader blank for batch risks** — only populated via workflow path.
 2. **Ekol seed data approximate** — line sizes estimated from general knowledge, not verified against actual placement records. Review and adjust.
-3. **`runRecon` reads localStorage** — book reconciliation still uses localStorage bookRows. Low priority — reconciliation is a manual admin task.
-4. **`calcChurnRisk` reads localStorage** — churn risk calculation uses localStorage entity notes. Not called from any active view since home page was rewritten.
+3. **`calcChurnRisk` reads localStorage** — churn risk calculation uses localStorage entity notes. Not called from any active view since home page was rewritten.
 5. **CW blotter, contacts, clause/slip library, SOV still in localStorage** — these are independent modules that don't interact with the entity/risk PG system.
 
 ---
@@ -520,16 +542,23 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 | — | Migration code removal | ✅ Done (Part 21) |
 | — | Company research for PG entities | ✅ Done (Part 21) |
 | — | Duplicate entity detection | ✅ Done (Part 21) |
+| — | Book reconciliation → PG | ✅ Done (Part 21) |
+| — | `entGetState`/`entSave` eliminated | ✅ Done (Part 22) |
+| — | Export/import rewritten for PG | ✅ Done (Part 22) |
+| — | Dead code cleanup (11 functions) | ✅ Done (Part 22) |
+| — | dataexport.js removed | ✅ Done (Part 22) |
+| — | AP/RP ledger CRUD on risk card | ✅ Done (Part 22) |
+| — | AP/RP Summary panel → PG (patches.js rewrite) | ✅ Done (Part 22) |
 
 ### Next priorities
 | # | Priority | Effort |
 |---|----------|--------|
-| 1 | Test all Part 21 features against live deployment | 1 hour |
-| 2 | Review Ekol seed data against actual placement | 15 min |
-| 3 | Rewrite `runRecon` for PG | 30 min |
-| 4 | Consider removing `entGetState`/`entSave` entirely | 1 session |
-| 5 | CW blotter → PG (if warranted) | 1-2 sessions |
-| 6 | AP/RP ledger architecture (designed, not built) | 1-2 sessions |
+| 1 | Test all Part 21+22 features against live deployment | 1 hour |
+| 2 | Test ledger CRUD + AP/RP Summary panel | 15 min |
+| 3 | Review Ekol seed data against actual placement | 15 min |
+| 4 | CW blotter → PG (if warranted) | 1-2 sessions |
+| 5 | Book rows → PG (portfolio-by-year endpoint exists, needs write path) | 1 session |
+| 6 | Contacts / address book → PG | 1 session |
 
 ---
 
@@ -551,7 +580,7 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 ### GitHub
 - Repo: `aceeagles1981/ogb-tool` (public)
 - Use GitHub Desktop for multi-file commits (one push = one deploy)
-- Root `app.py` must match `backend/app.py` (duplicate maintained for legacy reasons)
+- Root `app.py` must match `backend/app.py                  (4,003 lines — +64: DELETE ledger, GET /mi/ledger-summary)
 
 ---
 

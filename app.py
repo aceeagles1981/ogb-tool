@@ -1615,6 +1615,26 @@ def create_risk_ledger_entry(risk_id: int):
     return jsonify(serialise_ledger_entry(row)), 201
 
 
+@app.delete("/risks/<int:risk_id>/ledger/<int:entry_id>")
+@require_admin
+@rate_limited("default_write")
+def delete_risk_ledger_entry(risk_id: int, entry_id: int):
+    user_id = get_user_id_from_request()
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("SELECT * FROM risk_ledger_entries WHERE id = %s AND risk_id = %s", (entry_id, risk_id))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "Ledger entry not found"}), 404
+            cur.execute("DELETE FROM risk_ledger_entries WHERE id = %s", (entry_id,))
+            log_event(conn, "risk", risk_id, "ledger_entry_deleted", {
+                "entry_id": entry_id, "entry_type": row["entry_type"],
+                "gbp_amount": float(row["gbp_amount"]) if row["gbp_amount"] else None,
+                "description": row.get("description")
+            }, user_id)
+    return jsonify({"ok": True, "deleted_id": entry_id})
+
+
 @app.get("/portfolio-by-year")
 @require_admin
 @rate_limited("default_read")
@@ -3912,6 +3932,70 @@ def mi_producer_performance():
         "producers": producers,
         "unlinked_risks": unlinked,
     })
+
+
+@app.get("/mi/ledger-summary")
+@require_admin
+@rate_limited("default_read")
+def mi_ledger_summary():
+    """AP/RP summary: all risks with ledger entries, grouped by risk with type totals."""
+    year = parse_int_safe(request.args.get("year"))
+    where = ["r.merged_into_risk_id IS NULL"]
+    params: List[Any] = []
+    if year:
+        where.append("le.accounting_year = %s")
+        params.append(year)
+    sql = f"""
+        SELECT r.id, r.assured_name, r.display_name, r.producer, r.status,
+               r.accounting_year, r.currency, r.entity_id,
+               COALESCE(SUM(CASE WHEN le.entry_type = 'original' THEN le.gbp_amount ELSE 0 END), 0) AS original_gbp,
+               COALESCE(SUM(CASE WHEN le.entry_type = 'ap' THEN le.gbp_amount ELSE 0 END), 0) AS ap_gbp,
+               COALESCE(SUM(CASE WHEN le.entry_type = 'rp' THEN le.gbp_amount ELSE 0 END), 0) AS rp_gbp,
+               COALESCE(SUM(CASE WHEN le.entry_type = 'pc' THEN le.gbp_amount ELSE 0 END), 0) AS pc_gbp,
+               COALESCE(SUM(CASE WHEN le.entry_type = 'adj' THEN le.gbp_amount ELSE 0 END), 0) AS adj_gbp,
+               COUNT(le.id) AS entry_count
+        FROM risks r
+        JOIN risk_ledger_entries le ON le.risk_id = r.id
+        WHERE {" AND ".join(where)}
+        GROUP BY r.id
+        HAVING COUNT(le.id) > 0
+        ORDER BY LOWER(r.assured_name), r.id
+    """
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, params)
+            rows = []
+            totals = {"original": 0, "ap": 0, "rp": 0, "pc": 0, "adj": 0, "count": 0}
+            for r in cur.fetchall():
+                row = dict(r)
+                orig = float(row["original_gbp"])
+                ap = float(row["ap_gbp"])
+                rp = float(row["rp_gbp"])
+                pc = float(row["pc_gbp"])
+                adj = float(row["adj_gbp"])
+                net = orig + pc + adj - ap - rp
+                rows.append({
+                    "risk_id": row["id"],
+                    "name": row["display_name"] or row["assured_name"] or "?",
+                    "producer": row["producer"] or "—",
+                    "year": row["accounting_year"],
+                    "status": row["status"],
+                    "original": orig, "ap": ap, "rp": rp, "pc": pc, "adj": adj,
+                    "net": net, "entry_count": int(row["entry_count"]),
+                })
+                totals["original"] += orig
+                totals["ap"] += ap
+                totals["rp"] += rp
+                totals["pc"] += pc
+                totals["adj"] += adj
+                totals["count"] += 1
+            totals["net"] = totals["original"] + totals["pc"] + totals["adj"] - totals["ap"] - totals["rp"]
+
+            # Get distinct years for filter
+            cur.execute("SELECT DISTINCT accounting_year FROM risk_ledger_entries ORDER BY accounting_year DESC")
+            years = [int(r["accounting_year"]) for r in cur.fetchall()]
+
+    return jsonify({"rows": rows, "totals": totals, "years": years})
 
 
 if __name__ == "__main__":

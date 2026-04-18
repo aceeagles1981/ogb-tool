@@ -2189,47 +2189,7 @@ function renderRiskTimelineHtml(risk, tasks, ledger, activityItems){
   }).join('');
 }
 
-// handleMissingLocalInsured — called when a localStorage operation tries to
-// act on an insured ID that isn't in entGetState(). The ID might be:
-//   (a) a valid PG integer risk ID — in which case we can at least show the
-//       backend risk card (view-only; mutating operations aren't portable)
-//   (b) a legacy localStorage ID whose entity has been deleted
-//   (c) falsy (null, undefined, '') — caller bug
-// `operation` is a short label ("view", "delete note", "toggle post-bind")
-// used to make the notice helpful.
-function handleMissingLocalInsured(insId, operation) {
-  operation = operation || 'that action';
-  var asNum = Number(insId);
-  var isValidPgId = insId != null && insId !== '' &&
-                    Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0;
-
-  if (isValidPgId) {
-    // View operations translate cleanly to the backend risk card.
-    // Mutating operations (delete, toggle) don't — warn the user.
-    var isViewOnly = operation === 'view' || operation === 'open';
-    if (isViewOnly) {
-      openBackendRiskCard(asNum);
-    } else {
-      if (typeof showNotice === 'function') {
-        showNotice(
-          '"' + operation + '" isn\'t available for backend-only risks yet. Opening the view card instead.',
-          'warn'
-        );
-      }
-      openBackendRiskCard(asNum);
-    }
-    return;
-  }
-
-  // Not a valid PG ID — entity is genuinely missing.
-  if (typeof showNotice === 'function') {
-    var msg = insId == null || insId === ''
-      ? 'Cannot ' + operation + ' — no account selected'
-      : 'Cannot ' + operation + ' — account not found (may have been deleted)';
-    showNotice(msg, 'warn');
-  }
-  console.warn('[handleMissingLocalInsured] id=' + JSON.stringify(insId) + ' operation=' + operation);
-}
+// P22: handleMissingLocalInsured removed — zero callers after entOpenCard rewrite.
 
 function openBackendRiskCard(riskId){
   // Guard: backend routes are <int:risk_id>. Non-integer IDs produce 404s
@@ -2258,9 +2218,7 @@ function openBackendRiskCard(riskId){
       var wrap = document.getElementById('ent-card');
       var inner = document.getElementById('ent-card-inner');
       if(!wrap || !inner) return;
-      var led = (ledger.items||[]).length ? (ledger.items||[]).map(function(e){
-        return '<tr><td>'+ (e.entry_date||'—') +'</td><td>'+ String(e.entry_type||'').toUpperCase() +'</td><td>'+ (e.currency||'GBP') +'</td><td style="text-align:right">'+ (e.gbp_amount!=null?Number(e.gbp_amount).toLocaleString():'—') +'</td><td>'+ (e.description||'') +'</td></tr>';
-      }).join('') : '<tr><td colspan="5" class="muted">No ledger entries</td></tr>';
+      var ledgerHtml = buildLedgerHtml(riskId, ledger.items || []);
       var taskHtml = (tasks.items||[]).length ? (tasks.items||[]).map(function(t){
         var pri = (t.priority||'normal').replace('_',' ');
         var st = (t.status||'open').replace('_',' ');
@@ -2306,10 +2264,7 @@ function openBackendRiskCard(riskId){
             <div class="sh" style="font-size:12px">Activity timeline</div>
             ${renderRiskTimelineHtml(risk, tasks.items||[], ledger.items||[], activity.items||[])}
           </div>
-          <div class="card" style="padding:12px 14px">
-            <div class="sh" style="font-size:12px">Ledger</div>
-            <table><tr><th>Date</th><th>Type</th><th>CCY</th><th style="text-align:right">GBP</th><th>Description</th></tr>${led}</table>
-          </div>
+          ${ledgerHtml}
         </div>`;
       wrap.style.display='block';
       // P7: Load corrections badge async
@@ -4191,29 +4146,8 @@ function copyInfoRequest(){
   if(el) navigator.clipboard.writeText(el.textContent).then(()=>{const b=event.target;b.textContent='Copied!';setTimeout(()=>b.textContent='Copy email',2000);});
 }
 
-
-// ═══════════════════════════════════════════════════════
-// ENTITIES SEED VERSION — bump this string to force a smart merge reseed
-function entGetState(){
-  const s = gs();
-  if(!s.entities){
-    s.entities = JSON.parse(JSON.stringify(ENTITIES_SEED));
-    ss(s);
-  }
-  return s.entities;
-}
-
-function entSave(ent){ const s=gs(); s.entities=ent; ss(s); }
-
-function entStatusBadge(st){
-  return riskStatusBadgeHtml(st);
-}
-
-function entLatestEnquiry(ins){
-  if(!ins.enquiries||!ins.enquiries.length) return null;
-  return ins.enquiries[ins.enquiries.length-1];
-}
-
+// P22: entGetState/entSave/entStatusBadge/entLatestEnquiry removed.
+// All entity data now lives in PostgreSQL. No localStorage entity reads remain.
 function renderEntities(){
   (async function(){
     try {
@@ -4300,30 +4234,25 @@ function renderEntities(){
 }
 
 function entOpenCard(insId){
-  // P19/P21: Route to PG entity card. Legacy localStorage fallback removed in Part 21.
+  // P22: PG-only. All entities migrated. No localStorage lookup.
   var asNum = Number(insId);
   if (Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0) {
     openEntityCard(asNum);
     return;
   }
-  // localStorage slug ID — look up by name match in PG
-  var ent = entGetState();
-  var ins = ent.insureds ? ent.insureds.find(function(i){ return i.id === insId; }) : null;
-  if (ins) {
-    fetchEntityList({ type: 'insured', q: ins.name, limit: 5 }).then(function(matches) {
-      var exact = matches.find(function(m) { return m.name.toLowerCase().trim() === ins.name.toLowerCase().trim(); });
-      if (exact) {
-        openEntityCard(exact.id);
-      } else if (matches.length) {
+  // Non-numeric ID — try name search in PG
+  if (typeof insId === 'string' && insId.trim()) {
+    fetchEntityList({ type: 'insured', q: insId.replace(/-/g,' '), limit: 5 }).then(function(matches) {
+      if (matches.length) {
         openEntityCard(matches[0].id);
       } else {
-        showNotice('Entity "' + ins.name + '" not found in database. Use Accounts panel to create it.', 'warn');
+        showNotice('Entity not found in database. Use Accounts panel to create it.', 'warn');
       }
     }).catch(function() {
       showNotice('Could not look up entity. Check connection.', 'err');
     });
   } else {
-    handleMissingLocalInsured(insId, 'view');
+    showNotice('Invalid entity reference.', 'warn');
   }
 }
 
@@ -4392,14 +4321,13 @@ async function handleEmailFile(files){
   savedNotice.style.display='none';
   proc.style.display='block';
   document.getElementById('email-proc-msg').textContent='Parsing email...';
-  // P20: Fetch insured list from PG, localStorage fallback
+  // P22: Fetch insured list from PG only
   var insuredList = [];
   try {
     var pgEnts = await fetchEntityList({ type: 'insured', limit: 500 });
     insuredList = pgEnts.map(function(e){ return {id:e.id, name:e.name}; });
   } catch(e) {
-    var ent = entGetState();
-    insuredList = (ent.insureds||[]).map(function(i){ return {id:i.id, name:i.name}; });
+    showNotice('Could not fetch insured list from database', 'warn');
   }
   try{
     const fd = new FormData();
@@ -5583,10 +5511,7 @@ function useSlipAsPrecedent(id){
 }
 
 
-// P21: Legacy localStorage delete/research functions removed.
-// deleteInsured/deleteNote — use PG entity card. researchCompany — to be rebuilt for PG entities.
-function deleteInsured(){ showNotice('Use the PG entity card to manage entities','warn'); }
-function deleteNote(){ showNotice('Use the PG entity card to manage notes','warn'); }
+// P22: deleteInsured/deleteNote stubs removed — zero callers.
 async function researchCompany(entityId){
   // P21: PG-backed company research via backend AI endpoint
   if(!entityId){ showNotice('Entity ID required','err'); return; }
@@ -5694,14 +5619,13 @@ async function batchStart(){
 
   const delay = parseInt(document.getElementById('batch-delay').value)||1000;
   const total = _batchFiles.length;
-  const ent = entGetState();
-  // P19: Fetch PG entities for insured list, localStorage fallback
+  // P22: Fetch PG entities for insured list — no localStorage fallback
   var pgInsuredList = [];
   try {
     var pgEnts = await fetchEntityList({ type: 'insured', limit: 500 });
     pgInsuredList = pgEnts.sort(function(a,b){ return a.name.localeCompare(b.name); });
   } catch(e) {
-    pgInsuredList = (ent.insureds||[]).map(function(i){ return {id:i.id, name:i.name}; }).sort(function(a,b){ return a.name.localeCompare(b.name); });
+    showNotice('Could not fetch insured list from database', 'warn');
   }
   const insuredList = pgInsuredList;
 
@@ -6053,25 +5977,7 @@ function toggleCreateInsured(){
   if(!visible) document.getElementById('review-insured-sel').value = '';
 }
 
-function reviewPopEnquiry(){
-  const insId = document.getElementById('review-insured-sel').value;
-  const wrap = document.getElementById('review-enq-wrap');
-  const sel = document.getElementById('review-enquiry-sel');
-  if(!insId){wrap.style.display='none';return;}
-  wrap.style.display='block';
-  const ent = entGetState();
-  const ins = ent.insureds.find(i=>i.id===insId);
-  sel.innerHTML = '<option value="">— select —</option>';
-  if(ins){
-    [...ins.enquiries].reverse().forEach(e=>{
-      const o=document.createElement('option');
-      o.value=e.id;
-      o.textContent=(e.inceptionDate||'No date')+' · '+(e.status||'—');
-      sel.appendChild(o);
-    });
-    if(ins.enquiries.length) sel.value=ins.enquiries[ins.enquiries.length-1].id;
-  }
-}
+// P22: reviewPopEnquiry removed — dead code, never called. Enquiry selectors are localStorage-only.
 
 function reviewSave(){
   const item = _batchQueue[_reviewIdx];
@@ -6778,20 +6684,47 @@ async function cwGenerateCert(){function g(id){return (document.getElementById(i
 function cwCopyCert(){if(!window._lastCwCert){showNotice('Generate first','err');return;}navigator.clipboard.writeText(window._lastCwCert).then(function(){showNotice('Copied','ok');});}
 function cwClearCert(){['cert-vessel','cert-imo','cert-insured','cert-cedant','cert-goods','cert-tsi','cert-from','cert-to','cert-loaddate','cert-rate','cert-prem','cert-conditions','cert-binder'].forEach(function(id){var el=document.getElementById(id);if(el)el.value='';});document.getElementById('cw-cert-out-card').style.display='none';window._lastCwCert='';}
 
-// Data export/import
-function openDataModal(){var s=gs(),ent=entGetState();document.getElementById('data-summary').innerHTML=(ent.insureds||[]).length+' insureds · '+(s.bookRows||[]).length+' book rows';document.getElementById('export-notice').style.display='none';document.getElementById('import-notice').style.display='none';document.getElementById('data-modal').style.display='block';}
-function exportAllData(){var t=JSON.stringify({_at:new Date().toISOString(),ogb_state:gs(),ogb_entities:entGetState()},null,2);navigator.clipboard.writeText(t).then(function(){var el=document.getElementById('export-notice');el.textContent='✓ Copied ('+Math.round(t.length/1024)+'KB)';el.style.display='block';el.style.color='var(--ok)';});}
-function exportEntitiesOnly(){navigator.clipboard.writeText(JSON.stringify(entGetState(),null,2)).then(function(){showNotice('Entities copied','ok');});}
+// Data export/import — P22: all entity exports from PG, no localStorage entities
+async function openDataModal(){
+  var s=gs();
+  document.getElementById('data-summary').innerHTML='Loading...';
+  document.getElementById('export-notice').style.display='none';
+  document.getElementById('import-notice').style.display='none';
+  document.getElementById('data-modal').style.display='block';
+  try {
+    var summary = await apiFetch('/mi/summary');
+    var ic = summary.entity_counts || {};
+    document.getElementById('data-summary').innerHTML=(ic.insured_count||0)+' insureds · '+(ic.producer_count||0)+' producers (PG) · '+(s.bookRows||[]).length+' book rows (localStorage)';
+  } catch(e) { document.getElementById('data-summary').innerHTML='PG unavailable · '+(s.bookRows||[]).length+' book rows (localStorage)'; }
+}
+async function exportAllData(){
+  try {
+    var pgEnts = await fetchEntityList({limit:500});
+    var pgProds = await fetchEntityList({type:'producer',limit:100});
+    var t=JSON.stringify({_at:new Date().toISOString(),ogb_state:gs(),pg_entities:{insureds:pgEnts,producers:pgProds}},null,2);
+    navigator.clipboard.writeText(t).then(function(){var el=document.getElementById('export-notice');el.textContent='✓ Copied ('+Math.round(t.length/1024)+'KB)';el.style.display='block';el.style.color='var(--ok)';});
+  } catch(e) { showNotice('Export failed: '+e.message,'err'); }
+}
+async function exportEntitiesOnly(){
+  try {
+    var pgEnts = await fetchEntityList({limit:500});
+    var pgProds = await fetchEntityList({type:'producer',limit:100});
+    navigator.clipboard.writeText(JSON.stringify({insureds:pgEnts,producers:pgProds},null,2)).then(function(){showNotice('Entities copied (from PG)','ok');});
+  } catch(e) { showNotice('Export failed: '+e.message,'err'); }
+}
 function exportBookOnly(){navigator.clipboard.writeText(JSON.stringify(gs().bookRows||[],null,2)).then(function(){showNotice('Book copied','ok');});}
-function downloadDataJson(){var b=new Blob([JSON.stringify({_at:new Date().toISOString(),ogb_state:gs(),ogb_entities:entGetState()},null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='ogb-'+new Date().toISOString().slice(0,10)+'.json';a.click();}
-function importData(){var raw=(document.getElementById('import-json').value||'').trim();var el=document.getElementById('import-notice');el.style.display='block';if(!raw){el.textContent='Paste JSON first';el.style.color='var(--err)';return;}var p;try{p=JSON.parse(raw);}catch(e){el.textContent='Invalid JSON: '+e.message;el.style.color='var(--err)';return;}var imported=[];if(p.ogb_state){var ex=gs(),inc=p.ogb_state;if(inc.bookRows){if(!ex.bookRows)ex.bookRows=[];var ids=new Set(ex.bookRows.map(function(r){return r.id;}));var nr=inc.bookRows.filter(function(r){return !ids.has(r.id);});ex.bookRows=ex.bookRows.concat(nr);if(nr.length)imported.push(nr.length+' rows');}ss(ex);}if(p.ogb_entities){var exE=entGetState(),incE=p.ogb_entities;var ii=new Set((exE.insureds||[]).map(function(i){return i.id;}));var ni=(incE.insureds||[]).filter(function(i){return !ii.has(i.id);});exE.insureds=(exE.insureds||[]).concat(ni);entSave(exE);if(ni.length)imported.push(ni.length+' insureds');}el.textContent=imported.length?'✓ Imported: '+imported.join(', '):'Nothing new to import';el.style.color=imported.length?'var(--ok)':'var(--warn)';}
-function clearAllData(){if(!confirm('Clear ALL data?'))return;if(!confirm('Sure?'))return;localStorage.removeItem('og_state_v4');showNotice('Cleared — reload','warn');setTimeout(function(){location.reload();},1500);}
+async function downloadDataJson(){
+  try {
+    var pgEnts = await fetchEntityList({limit:500});
+    var pgProds = await fetchEntityList({type:'producer',limit:100});
+    var b=new Blob([JSON.stringify({_at:new Date().toISOString(),ogb_state:gs(),pg_entities:{insureds:pgEnts,producers:pgProds}},null,2)],{type:'application/json'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='ogb-'+new Date().toISOString().slice(0,10)+'.json';a.click();
+  } catch(e) { showNotice('Download failed: '+e.message,'err'); }
+}
+function importData(){var raw=(document.getElementById('import-json').value||'').trim();var el=document.getElementById('import-notice');el.style.display='block';if(!raw){el.textContent='Paste JSON first';el.style.color='var(--err)';return;}var p;try{p=JSON.parse(raw);}catch(e){el.textContent='Invalid JSON: '+e.message;el.style.color='var(--err)';return;}var imported=[];if(p.ogb_state){var ex=gs(),inc=p.ogb_state;if(inc.bookRows){if(!ex.bookRows)ex.bookRows=[];var ids=new Set(ex.bookRows.map(function(r){return r.id;}));var nr=inc.bookRows.filter(function(r){return !ids.has(r.id);});ex.bookRows=ex.bookRows.concat(nr);if(nr.length)imported.push(nr.length+' rows');}ss(ex);}if(p.ogb_entities||p.pg_entities){el.textContent=(imported.length?'Imported: '+imported.join(', ')+'. ':'')+'Entity data skipped — entities live in PostgreSQL. Use Accounts panel.';el.style.color='var(--warn)';return;}el.textContent=imported.length?'✓ Imported: '+imported.join(', '):'Nothing new to import';el.style.color=imported.length?'var(--ok)':'var(--warn)';}
+function clearAllData(){if(!confirm('Clear localStorage? PG data is unaffected.'))return;if(!confirm('Sure?'))return;localStorage.removeItem('og_state_v4');showNotice('localStorage cleared — PG data preserved. Reload.','warn');setTimeout(function(){location.reload();},1500);}
 
-// P21: Migration functions removed — migration complete (151 entities in PG).
-// Stubs kept for any residual callers.
-function buildMigrationPayload() { return { entities: [] }; }
-function previewMigration() { showNotice('Migration already complete — 151 entities in PG', 'ok'); }
-async function migrateEntitiesToPG() { showNotice('Migration already complete — 151 entities in PG', 'ok'); }
+// P22: Migration stubs removed — zero callers remain.
 
 async function cleanupJunkRisks(dryRun) {
   var el = document.getElementById('cleanup-notice');
@@ -6835,11 +6768,8 @@ async function populateRenewalRefs(){
     }).sort(function(a,b){return a.l.localeCompare(b.l);});
     sel.innerHTML='<option value="">Select bound risk...</option>'+opts.map(function(o){return '<option value="'+o.v+'">'+o.l+'</option>';}).join('');
   } catch(e) {
-    // Fallback to localStorage
-    var ent=entGetState();var opts=[];
-    (ent.insureds||[]).forEach(function(ins){(ins.enquiries||[]).filter(function(e){return e.status==='Bound';}).forEach(function(enq){var p=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});opts.push({v:ins.id+'::'+enq.id,l:ins.name+' · '+(enq.inceptionDate||'?')+' · '+(p?p.name:'')});});});
-    opts.sort(function(a,b){return a.l.localeCompare(b.l);});
-    sel.innerHTML='<option value="">Select bound account...</option>'+opts.map(function(o){return '<option value="'+o.v+'">'+o.l+'</option>';}).join('');
+    sel.innerHTML='<option value="">Could not load risks — check connection</option>';
+    showNotice('Could not fetch bound risks: '+e.message,'err');
   }
 }
 var _rpDocs_new={mrc:'',sub:'',client:''};
@@ -6853,33 +6783,23 @@ async function generateRenewalPack(){
   if(spEl)spEl.style.display='inline';if(oc)oc.style.display='none';
   _rpDocs_new={mrc:'',sub:'',client:''};
 
-  // P21: Try PG risk first (ref is a risk ID), fall back to localStorage insId::enqId
+  // P22: PG risk only — no localStorage fallback
   var ctx = '';
-  if(ref.indexOf('::') === -1) {
-    // PG risk ID
-    try {
-      var risk = await apiFetch('/risks/' + ref);
-      var renewalDate = ((document.getElementById('renewal-date')||{value:'TBC'}).value||'TBC');
-      var changes = ((document.getElementById('renewal-ctx')||{value:''}).value||'none specified');
-      ctx = 'Insured: '+(risk.assured_name||'—')
-        +'\nProducer: '+(risk.producer||'—')
-        +'\nInception: '+(risk.inception_date||'—')
-        +'\nExpiry: '+(risk.expiry_date||'—')
-        +'\nRenewal inception: '+renewalDate
-        +'\nProduct: '+(risk.product||'Marine Cargo/STP')
-        +'\nCurrency: '+(risk.currency||'USD')
-        +'\nPremium: '+(risk.gross_premium||'—')
-        +'\nNotes: '+(risk.notes||'—')
-        +'\nChanges: '+changes;
-    } catch(e) { showNotice('Could not load risk: '+e.message,'err'); if(spEl)spEl.style.display='none'; return; }
-  } else {
-    // localStorage fallback (insId::enqId)
-    var parts=ref.split('::'),insId=parts[0],enqId=parts[1];
-    var ent=entGetState(),ins=(ent.insureds||[]).find(function(i){return i.id===insId;}),enq=ins&&(ins.enquiries||[]).find(function(e){return e.id===enqId;});
-    if(!ins||!enq){showNotice('Account not found','err');if(spEl)spEl.style.display='none';return;}
-    var prod=(ent.producers||[]).find(function(p){return p.id===ins.producerId;});
-    ctx='Insured: '+ins.name+'\nProducer: '+(prod?prod.name:'—')+'\nInception: '+(enq.inceptionDate||'—')+'\nExpiry: '+(enq.expiryDate||'—')+'\nRenewal inception: '+((document.getElementById('renewal-date')||{value:'TBC'}).value||'TBC')+'\nProduct: '+(enq.product||'Marine Cargo/STP')+'\nCurrency: '+(enq.currency||'USD')+'\nPremium: '+(enq.premium||'—')+'\nChanges: '+((document.getElementById('renewal-ctx')||{value:''}).value||'none specified');
-  }
+  try {
+    var risk = await apiFetch('/risks/' + ref);
+    var renewalDate = ((document.getElementById('renewal-date')||{value:'TBC'}).value||'TBC');
+    var changes = ((document.getElementById('renewal-ctx')||{value:''}).value||'none specified');
+    ctx = 'Insured: '+(risk.assured_name||'—')
+      +'\nProducer: '+(risk.producer||'—')
+      +'\nInception: '+(risk.inception_date||'—')
+      +'\nExpiry: '+(risk.expiry_date||'—')
+      +'\nRenewal inception: '+renewalDate
+      +'\nProduct: '+(risk.product||'Marine Cargo/STP')
+      +'\nCurrency: '+(risk.currency||'USD')
+      +'\nPremium: '+(risk.gross_premium||'—')
+      +'\nNotes: '+(risk.notes||'—')
+      +'\nChanges: '+changes;
+  } catch(e) { showNotice('Could not load risk: '+e.message,'err'); if(spEl)spEl.style.display='none'; return; }
 
   var MRC_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking. Write an MRC renewal summary slip in plain text with ALL CAPS headers. Include: RENEWAL, INSURED, CEDANT, PERIOD, INTEREST, CONDITIONS, SUM INSURED, PREMIUM, BROKERAGE, CHANGES FROM EXPIRING, SUBJECTIVITIES.';
   var SUB_SYS='You are a senior Lloyd\'s wholesale broker at OG Broking writing a renewal market submission email. Story-first, reference the relationship and loss record. Plain text, Subject: line first, no markdown.';
@@ -8264,5 +8184,169 @@ async function autoExtractMarketFeedback(riskId, emailBody, emailDate, product, 
     }
   } catch(e) {
     console.warn('Auto market extraction failed:', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// P22: AP/RP LEDGER CRUD ON RISK CARD
+// ═══════════════════════════════════════════════════════
+
+async function fetchRiskLedger(riskId) {
+  var data = await apiFetch('/risks/' + riskId + '/ledger');
+  return data.items || [];
+}
+
+function buildLedgerHtml(riskId, entries) {
+  // Compute totals by type
+  var totals = { original: 0, ap: 0, rp: 0, pc: 0, adj: 0 };
+  (entries || []).forEach(function(e) {
+    var amt = parseFloat(e.gbp_amount) || 0;
+    if (totals.hasOwnProperty(e.entry_type)) totals[e.entry_type] += amt;
+  });
+  var net = totals.original + totals.pc + totals.adj - totals.ap - totals.rp;
+
+  function fG(n) {
+    if (n === 0) return '—';
+    var abs = Math.abs(Math.round(n));
+    var s = abs >= 1000 ? '£' + (abs / 1000).toFixed(1) + 'k' : '£' + abs.toLocaleString();
+    return n < 0 ? '(' + s + ')' : s;
+  }
+
+  // Summary tiles (only show if there are entries)
+  var summaryHtml = '';
+  if (entries && entries.length) {
+    function tile(label, val, col) {
+      var disp = val === 0 ? '—' : fG(val);
+      return '<div style="text-align:center;min-width:70px;flex:1">'
+        + '<div style="font-size:15px;font-weight:700;color:' + col + '">' + disp + '</div>'
+        + '<div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;margin-top:2px">' + label + '</div>'
+        + '</div>';
+    }
+    var nc = net >= 0 ? 'var(--ok)' : 'var(--err)';
+    summaryHtml = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+      + tile('Invoiced', totals.original, 'var(--ok)')
+      + tile('AP', totals.ap, '#185FA5')
+      + tile('RP', totals.rp, '#A32D2D')
+      + tile('PC', totals.pc, '#854F0B')
+      + tile('Adj', totals.adj, 'var(--text2)')
+      + tile('Net', net, nc)
+      + '</div>';
+  }
+
+  // Entry rows
+  var rowsHtml = '';
+  if (entries && entries.length) {
+    rowsHtml = '<table style="width:100%;font-size:11px;border-collapse:collapse;margin-bottom:8px">'
+      + '<thead><tr style="border-bottom:1px solid var(--border)">'
+      + '<th style="text-align:left;padding:4px 6px">Date</th>'
+      + '<th style="text-align:left;padding:4px 6px">Type</th>'
+      + '<th style="text-align:left;padding:4px 6px">CCY</th>'
+      + '<th style="text-align:right;padding:4px 6px">Original</th>'
+      + '<th style="text-align:right;padding:4px 6px">GBP</th>'
+      + '<th style="text-align:left;padding:4px 6px">Description</th>'
+      + '<th style="padding:4px 4px"></th>'
+      + '</tr></thead><tbody>';
+    entries.forEach(function(e) {
+      var typeLabel = String(e.entry_type || '').toUpperCase();
+      var typeCol = { ORIGINAL: 'var(--ok)', AP: '#185FA5', RP: '#A32D2D', PC: '#854F0B', ADJ: 'var(--text2)' }[typeLabel] || 'var(--text)';
+      rowsHtml += '<tr style="border-bottom:0.5px solid var(--border)">'
+        + '<td style="padding:5px 6px">' + (e.entry_date || '—') + '</td>'
+        + '<td style="padding:5px 6px;font-weight:600;color:' + typeCol + '">' + typeLabel + '</td>'
+        + '<td style="padding:5px 6px;color:var(--text3)">' + (e.currency || 'GBP') + '</td>'
+        + '<td style="padding:5px 6px;text-align:right">' + (e.original_amount != null ? Number(e.original_amount).toLocaleString() : '—') + '</td>'
+        + '<td style="padding:5px 6px;text-align:right;font-weight:600">' + (e.gbp_amount != null ? Number(e.gbp_amount).toLocaleString() : '—') + '</td>'
+        + '<td style="padding:5px 6px;color:var(--text2)">' + (e.description || '') + '</td>'
+        + '<td style="padding:3px 4px"><button onclick="deleteLedgerEntry(' + riskId + ',' + e.id + ')" style="border:none;background:none;cursor:pointer;color:var(--text3);font-size:13px" title="Delete">✕</button></td>'
+        + '</tr>';
+    });
+    rowsHtml += '</tbody></table>';
+  } else {
+    rowsHtml = '<div class="muted" style="font-size:11px;margin-bottom:8px">No ledger entries yet.</div>';
+  }
+
+  // Inline add form
+  var now = new Date();
+  var todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  var formHtml = '<div id="ledger-add-form-' + riskId + '" style="display:none;background:var(--bg);border-radius:6px;padding:10px 12px;margin-top:6px;border:1px solid var(--border)">'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end">'
+    + '<div style="flex:0 0 90px"><label style="font-size:10px;color:var(--text3)">Type</label><select id="le-type-' + riskId + '" style="width:100%;font-size:11px;padding:4px">'
+    + '<option value="original">Original</option><option value="ap">AP</option><option value="rp">RP</option><option value="pc">PC</option><option value="adj">Adj</option></select></div>'
+    + '<div style="flex:0 0 100px"><label style="font-size:10px;color:var(--text3)">Date</label><input type="date" id="le-date-' + riskId + '" value="' + todayStr + '" style="width:100%;font-size:11px;padding:4px"></div>'
+    + '<div style="flex:0 0 55px"><label style="font-size:10px;color:var(--text3)">CCY</label><input type="text" id="le-ccy-' + riskId + '" value="GBP" style="width:100%;font-size:11px;padding:4px"></div>'
+    + '<div style="flex:0 0 80px"><label style="font-size:10px;color:var(--text3)">Original</label><input type="number" id="le-orig-' + riskId + '" step="0.01" placeholder="0.00" style="width:100%;font-size:11px;padding:4px"></div>'
+    + '<div style="flex:0 0 80px"><label style="font-size:10px;color:var(--text3)">GBP</label><input type="number" id="le-gbp-' + riskId + '" step="0.01" placeholder="0.00" style="width:100%;font-size:11px;padding:4px"></div>'
+    + '<div style="flex:1;min-width:100px"><label style="font-size:10px;color:var(--text3)">Description</label><input type="text" id="le-desc-' + riskId + '" placeholder="e.g. Q1 AP adjustment" style="width:100%;font-size:11px;padding:4px"></div>'
+    + '<div><button class="btn sm primary" onclick="addLedgerEntry(' + riskId + ')" style="font-size:11px">Save</button></div>'
+    + '</div>'
+    + '</div>';
+
+  return '<div class="card" style="padding:12px 14px;margin-bottom:12px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">'
+    + '<div class="sh" style="font-size:12px;margin:0">Ledger</div>'
+    + '<button class="btn sm" onclick="toggleLedgerForm(' + riskId + ')" style="font-size:11px">+ Entry</button>'
+    + '</div>'
+    + summaryHtml
+    + rowsHtml
+    + formHtml
+    + '<div style="font-size:9px;color:var(--text3);margin-top:4px">AP = return premiums OGB owes market · RP = additional premiums market owes OGB · Net = Invoiced + PC + Adj − AP − RP</div>'
+    + '</div>';
+}
+
+function toggleLedgerForm(riskId) {
+  var el = document.getElementById('ledger-add-form-' + riskId);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function addLedgerEntry(riskId) {
+  var entryType = (document.getElementById('le-type-' + riskId) || {}).value || 'original';
+  var entryDate = (document.getElementById('le-date-' + riskId) || {}).value || null;
+  var ccy = (document.getElementById('le-ccy-' + riskId) || {}).value || 'GBP';
+  var origAmt = (document.getElementById('le-orig-' + riskId) || {}).value || null;
+  var gbpAmt = (document.getElementById('le-gbp-' + riskId) || {}).value;
+  var desc = (document.getElementById('le-desc-' + riskId) || {}).value || '';
+
+  if (!gbpAmt || isNaN(parseFloat(gbpAmt))) {
+    showNotice('GBP amount is required', 'err');
+    return;
+  }
+
+  // Derive accounting year from entry date or current year
+  var accYear = new Date().getFullYear();
+  if (entryDate) {
+    var ym = entryDate.match(/(\d{4})/);
+    if (ym) accYear = parseInt(ym[1]);
+  }
+
+  try {
+    await apiFetch('/risks/' + riskId + '/ledger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entry_type: entryType,
+        entry_date: entryDate,
+        accounting_year: accYear,
+        currency: ccy.toUpperCase(),
+        original_amount: origAmt ? parseFloat(origAmt) : null,
+        gbp_amount: parseFloat(gbpAmt),
+        description: desc,
+        source: 'manual'
+      })
+    });
+    showNotice('Ledger entry added', 'ok');
+    // Refresh risk card
+    openBackendRiskCard(riskId);
+  } catch (e) {
+    showNotice('Failed to add ledger entry: ' + e.message, 'err');
+  }
+}
+
+async function deleteLedgerEntry(riskId, entryId) {
+  if (!confirm('Delete this ledger entry?')) return;
+  try {
+    await apiFetch('/risks/' + riskId + '/ledger/' + entryId, { method: 'DELETE' });
+    showNotice('Ledger entry deleted', 'ok');
+    openBackendRiskCard(riskId);
+  } catch (e) {
+    showNotice('Failed to delete: ' + e.message, 'err');
   }
 }
