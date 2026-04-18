@@ -388,6 +388,8 @@ function tab(id){
   if(id==='projectcargo') renderProjectCargo();
     if(id==='sliplib'){ ensureBulkSTPRISeed(); ensureStandardSTPSeed(); ensurePharmaSTPSeed(); renderSlipLib(); }
   if(id==='clauselib') renderClauseLib();
+  if(id==='reporting') renderMIDashboard();
+  if(id==='intelligence') renderMI8Scorecards();
 }
 
 function gs(){ try{ return JSON.parse(localStorage.getItem('og_state_v4')||'{}'); }catch{ return {}; } }
@@ -2262,7 +2264,8 @@ function openBackendRiskCard(riskId){
       var taskHtml = (tasks.items||[]).length ? (tasks.items||[]).map(function(t){
         var pri = (t.priority||'normal').replace('_',' ');
         var st = (t.status||'open').replace('_',' ');
-        return '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)"><div><div style="font-size:12px;font-weight:600">'+(t.title||'Task')+'</div><div class="muted" style="margin-top:3px;font-size:11px">'+(t.owner||'Unassigned')+' · '+st+' · '+pri+(t.due_date?' · due '+isoToUk(t.due_date):'')+'</div>'+(t.description?'<div style="margin-top:4px;font-size:11px;color:var(--text2)">'+t.description+'</div>':'')+'</div><div><button class="btn sm" onclick="completeRiskTask('+t.id+','+riskId+')">Done</button></div></div>';
+        var isDone = t.status === 'done';
+        return '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);'+(isDone?'opacity:0.5;':'')+'"><div><div style="font-size:12px;font-weight:600;'+(isDone?'text-decoration:line-through;':'')+'">'+(t.title||'Task')+'</div><div class="muted" style="margin-top:3px;font-size:11px">'+(t.owner||'Unassigned')+' · '+st+' · '+pri+(t.due_date?' · due '+isoToUk(t.due_date):'')+'</div>'+(t.description?'<div style="margin-top:4px;font-size:11px;color:var(--text2)">'+t.description+'</div>':'')+'</div>'+(isDone?'<div style="font-size:11px;color:var(--ok)">✓</div>':'<div><button class="btn sm" onclick="completeRiskTask('+t.id+','+riskId+')">Done</button></div>')+'</div>';
       }).join('') : '<div class="muted">No tasks yet.</div>';
       inner.innerHTML = `
         <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
@@ -2290,6 +2293,7 @@ function openBackendRiskCard(riskId){
             ${risk.review_reason ? '<div class="notice warn" style="margin-top:8px">Review: '+risk.review_reason+'</div>' : ''}
           </div>
           ${buildComplianceBadgeHtml(risk)}
+          <div id="corrections-badge-${risk.id}"></div>
           ${buildPostBindChecklistHtml(risk)}
           <div class="card" style="padding:12px 14px;margin-bottom:12px">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
@@ -2308,6 +2312,8 @@ function openBackendRiskCard(riskId){
           </div>
         </div>`;
       wrap.style.display='block';
+      // P7: Load corrections badge async
+      loadCorrectionsBadge(riskId);
     }catch(e){ showNotice('Could not load risk: '+e.message,'err'); }
   })();
 }
@@ -2328,7 +2334,10 @@ async function quickAddRiskTask(riskId){
   } catch(e){ showNotice('Task save failed: '+e.message,'err'); }
 }
 
+var _completingTask = {};
 async function completeRiskTask(taskId, riskId){
+  if(_completingTask[taskId]) return;
+  _completingTask[taskId] = true;
   try {
     await apiFetch('/tasks/' + taskId, {
       method:'PATCH',
@@ -2339,6 +2348,7 @@ async function completeRiskTask(taskId, riskId){
     openBackendRiskCard(riskId);
     renderPipeline();
   } catch(e){ showNotice('Task update failed: '+e.message,'err'); }
+  finally { delete _completingTask[taskId]; }
 }
 
 function buildComplianceBadgeHtml(risk) {
@@ -4183,44 +4193,6 @@ function copyInfoRequest(){
 
 // ═══════════════════════════════════════════════════════
 // ENTITIES SEED VERSION — bump this string to force a smart merge reseed
-// Merge logic: seed data wins for seed enquiry IDs; user-added enquiries preserved;
-// notes/emails/slips/companyBackground preserved; user-added insureds preserved.
-var ENTITIES_SEED_VERSION_NEW = "v9.0";
-
-function entGetState(){
-  var s = gs();
-  if(!s.entities || s.entitiesVersion !== ENTITIES_SEED_VERSION_NEW){
-    var seed = JSON.parse(JSON.stringify(ENTITIES_SEED));
-    if(s.entities && s.entitiesVersion){
-      // Smart merge — preserve user additions
-      var seedIds = new Set(seed.insureds.map(function(i){ return i.id; }));
-      var userAdded = (s.entities.insureds||[]).filter(function(i){ return !seedIds.has(i.id); });
-      var DELETED_STUB_IDS = new Set(['fg-ship-bunkers-01012026']);
-      seed.insureds.forEach(function(seedIns){
-        var existing = (s.entities.insureds||[]).find(function(i){ return i.id===seedIns.id; });
-        if(existing){
-          var seedEnqIds = new Set(seedIns.enquiries.map(function(e){ return e.id; }));
-          var userEnqs = (existing.enquiries||[]).filter(function(e){
-            return !seedEnqIds.has(e.id) && !DELETED_STUB_IDS.has(e.id);
-          });
-          seedIns.enquiries = seedIns.enquiries.concat(userEnqs);
-          if(existing.notes&&existing.notes.length) seedIns.notes = existing.notes;
-          if(existing.emails&&existing.emails.length) seedIns.emails = existing.emails;
-          if(existing.slips&&existing.slips.length) seedIns.slips = existing.slips;
-          if(existing.companyBackground) seedIns.companyBackground = existing.companyBackground;
-        }
-      });
-      seed.insureds = seed.insureds.concat(userAdded);
-    }
-    s.entities = seed;
-    s.entitiesVersion = ENTITIES_SEED_VERSION_NEW;
-    ss(s);
-  }
-  return s.entities;
-}
-
-const ENTITIES_SEED = {"producers": [{"id": "integra", "name": "Integra", "insureds": ["ceva-lojistik-borusan-vehicle-logist", "makine-ve-kimya-end-strisi-a", "maxlog-ffl", "pars-demi-ryolu-i-letmeci-li-i-anoni", "tradezone", "paptrans", "dfds-poland", "yapi-merkezi", "korver-ffl", "origin-fevzi-gandur", "universal-acarsan-group", "sunar-misir-stp", "erkport", "evolog-nakli-yat-i-hti-yari-ffl-dest", "irmak-warehousing", "sunwoda-mobility-energy-technology-c", "orion-ffl-tekli-f-talebi-hk", "yalova-roro-excess-whll", "akar-i-ve-d-tic-ltd-ti", "asav-ffl", "gemlik-cargo-plus-war", "fevzi-gandur-whll", "tlm-ffl", "ekol-lojistik-as", "sunel-tobacco", "tiryaki-agro-gida-sanayi-ve-ticaret-", "gefco-tasimacilik-ve-lojistik-as", "kayikcioglu-kadoline-trans", "dnt-uluslararasi-nakliye", "gumustas-lojistik", "hakan-gida", "asbas-marine", "metal-market-international", "origin-fgl-lojistik-a-s", "tlc-klima-san-ve-tic-a-s", "cobantur-logistics", "sasa-polyester", "tech-enerji-danismanlik-ltd-sti"]}, {"id": "langelier", "name": "Langelier", "insureds": ["ppaq", "sunset-converting-corp", "semex-canada", "soline-trading-ltd", "semex-inc"]}, {"id": "arb-international", "name": "ARB International / ARB Europe", "insureds": ["semillas-el-campillo", "semillas-batlle", "tole-catalana", "serradora-boix", "calconut-sl"]}, {"id": "momentum", "name": "Momentum (Panama)", "insureds": ["lx-pantos-logistics-panama-s-a-2026-", "muresa-intertrade"]}, {"id": "latam-re", "name": "Latam Re", "insureds": ["distribeaute-sa", "yaafar-internacional-s-a", "mirage-trading-s-a"]}, {"id": "prudent", "name": "Prudent Insurance Brokers", "insureds": ["strides-pharma-inc"]}, {"id": "ink-consulting", "name": "Ink Consulting SARL", "insureds": ["ink-consulting-sarl"]}, {"id": "aib", "name": "AIB", "insureds": ["fg-ship-bunkers"]}, {"id": "khai-gemini-brokers", "name": "Khai @ Gemini Brokers", "insureds": ["denko-trading"]}, {"id": "rt-specialty", "name": "RT Specialty", "insureds": ["bzs-transport-llc", "ship-rooster-ai-inc", "precision-citrus-hedging", "rush-golfscapes-llc-cpe", "slb-equipment-list-of-trailers", "natural-ag-solutions-llc", "vital-planet-llc", "name-tbc-childrens-arts-supplies", "sutton-services-llc", "merits-health-products-inc", "bill-casey-electric-sales-inc", "barnaby-ltd", "good-vibrations", "image-trust", "mote-marine-laboratory-inc"]}, {"id": "strada-consulting", "name": "Strada Consulting", "insureds": ["forestal-del-sur", "mon-meros-colombo-venezolanos-s-a", "grupo-titanio", "euromaster", "kupfer-hnos"]}, {"id": "kmc", "name": "KMC", "insureds": ["ygl-lojistik", "logitrans", "ody-lojistik"]}, {"id": "mds-corredores", "name": "MDS Corredores de Reaseguros SA", "insureds": ["forestal-del-sur"]}, {"id": "jnp-re", "name": "JNP Re", "insureds": ["patria-seguros-y-reaseguros-paraguay", "tecnomyl-s-a", "la-consolidada-paraguay", "fuelpar", "cma-paraguay-s-a"]}, {"id": "oneglobal-peru", "name": "OneGlobal Peru", "insureds": ["inmobiliaria-don-salomon", "seafrost"]}, {"id": "oneglobal-colombia", "name": "OneGlobal Colombia", "insureds": ["cooprocarcat-mining-cooperative-coal", "etanoles-del-magdalena"]}, {"id": "oneglobal-dubai", "name": "OneGlobal Dubai", "insureds": ["chalhoub-group", "triangle-commodities-trading", "nasser-bin-abdullatif-alserkal-group"]}, {"id": "oneglobal-brazil", "name": "OneGlobal Brazil", "insureds": ["inpasa-grenco-tankage-operation", "innospace-do-brasil-ltd"]}, {"id": "argentum-re", "name": "Argentum RE", "insureds": ["sumex-america-corp"]}, {"id": "bfl-canada", "name": "BFL Canada", "insureds": ["guy-d-anjou-inc"]}, {"id": "bms-brasil", "name": "BMS Brasil", "insureds": ["vtc-operadora-logistica-ltda"]}, {"id": "bridge-specialty", "name": "Bridge Specialty", "insureds": ["life-electric-vehicles-inc"]}, {"id": "charter", "name": "Charter", "insureds": ["harvest-marketing-trading-llc"]}, {"id": "energy-london", "name": "Energy London", "insureds": ["silleno-cargo-project-cargo"]}, {"id": "fortus-inter-partes", "name": "Fortus Inter Partes", "insureds": ["halk-insurance-plc", "euroherc-insurance"]}, {"id": "houlders", "name": "Houlders", "insureds": ["glengyle"]}, {"id": "hull-co", "name": "Hull & Co", "insureds": ["the-bruery-llc-et-al"]}, {"id": "jonasre", "name": "JonasRe Ltd", "insureds": ["brimich-logistics-and-packaging-inc"]}, {"id": "lareau", "name": "Lareau", "insureds": ["jefo-nutrition-bor-moved-away-from-l"]}, {"id": "lillenfeld", "name": "Lillenfeld", "insureds": ["akikb-minibodegas-spa"]}, {"id": "pf-chile", "name": "PF CHile", "insureds": ["castillomax-oil-and-gas-s-a-venezuel"]}, {"id": "pacific-insurance", "name": "Pacific Insurance Brokers Corp", "insureds": ["extrum-sa"]}, {"id": "sky-re", "name": "SKY RE", "insureds": ["byd-mexico", "unimog", "servicio-huan-maro-s-a-de-c-v", "jacob-jacob"]}, {"id": "volcafe-uk", "name": "Volcafe UK", "insureds": ["volcafe-uk"]}], "insureds": [{"id": "semillas-el-campillo", "name": "Semillas EL Campillo", "producerId": "arb-international", "region": "Spain", "enquiries": [{"id": "semillas-el-campillo-16122026", "handler": "KE", "enquiryDate": "24/11/2025", "inceptionDate": "16/12/2025", "currency": "USD", "premium": "", "commission": "3500", "notes": "W/AMP 08/12 - placed locally", "newRenewal": "", "region": "Spain", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "halk-insurance-plc", "name": "Halk Insurance plc", "producerId": "fortus-inter-partes", "region": "Croatia", "enquiries": [{"id": "halk-insurance-plc-01012026", "handler": "KE", "enquiryDate": "20/11/2025", "inceptionDate": "01/01/2026", "currency": "", "premium": "", "commission": "", "notes": "Sent out to Markets 08/12 - couldn't secure solution", "newRenewal": "", "region": "Croatia", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ceva-lojistik-borusan-vehicle-logist", "name": "CEVA Lojistik / Borusan Vehicle Logistics", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "ceva-lojistik-borusan-ve-29032026", "handler": "KE/MM/EW", "enquiryDate": "03/02/2026", "inceptionDate": "29/03/2026", "currency": "EUR", "premium": "565000", "commission": "77687", "notes": "Marine Cargo RI. EUR 300k limit per loss, EUR 1,500 deductible per vehicle. MDP EUR 565,000 adjustable. Landmark 100% line to stand. Profit commission 15%.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "Landmark", "cedant": "T\u00fcrkiye Sigorta A.S.", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}, "placement": {"id": "ceva-mc-2026-27", "period": "29 Mar 2026 \u2013 28 Mar 2027", "type": "Marine Cargo Reinsurance", "currency": "EUR", "overseasBroker": "Integra Sigorta ve Reas\u00fcrans Brokerli\u011fi A.\u015e.", "totalPremium": 565000, "notes": "MDP EUR 565,000 adjustable at 0.03042% on total values (est. EUR 2,127,000,000). Profit commission 15% of profit. Loss history: 2024-25 EUR 513,918 (incl EUR 50k AAD); 2023-24 EUR 424,431; 2022-23 EUR 267,393; 2021-22 EUR 293,985.", "layers": [{"id": "ceva-l1", "umr": "B1743MC2681275", "description": "EUR 300,000 any one loss \u2014 transit (first loss basis)", "limitM": 0.3, "attachmentM": 0, "cedant": "T\u00fcrkiye Sigorta A.S.", "slipLeader": "Landmark Chelsea Underwriting (obo PVI Insurance Corporation)", "grossPremium": 565000, "brokerage": 13.72, "netPremium": 488458, "markets": [{"name": "Landmark Chelsea / PVI", "syndicate": "off-platform", "written": 100.0, "signed": 100.0, "note": "Line To Stand"}]}]}}], "emails": [], "slips": []}, {"id": "makine-ve-kimya-end-strisi-a", "name": "Makine ve Kimya End\u00fcstrisi A.\u015e.", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "makine-ve-kimya-end-stri-01.Jan.2", "handler": "EW", "enquiryDate": "05/12/2025", "inceptionDate": "01/01/2026", "currency": "USD", "premium": "", "commission": "10000", "notes": "Ed awaiting information - Ekin to answer compliance questionnaire", "newRenewal": "", "region": "Turkey", "status": "Dead", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "tecnomyl-s-a", "name": "TECNOMYL S.A.", "producerId": "jnp-re", "region": "Paraguay", "enquiries": [{"id": "tecnomyl-s-a-01012026", "handler": "EW", "enquiryDate": "05/11/2025", "inceptionDate": "01/01/2026", "currency": "USD", "premium": "25000", "commission": "2500", "notes": "Quoted - put up 28/11. Ed chased on 03.12.2026. Q instalments offered. They purchased a master/brazil HQ programme locally.", "newRenewal": "N", "region": "Paraguay", "status": "Dead", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "fg-ship-bunkers", "name": "FG Ship Bunkers", "producerId": "aib", "region": "Malta", "enquiries": [{"id": "fg-ship-bunkers-01012026", "handler": "EW", "enquiryDate": "15/12/2025", "inceptionDate": "01/01/2026", "currency": "USD", "premium": "50000", "commission": "5000", "notes": "Quoted, now under 1 month extension.", "newRenewal": "Renewal", "region": "Malta", "status": "Bound", "quoteLeader": "A2B", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}, {"id": "fg-ship-bunkers-01022026", "handler": "EW/MM", "enquiryDate": "01/02/2026", "inceptionDate": "01/02/2026", "currency": "USD", "premium": "30000", "commission": "5000", "notes": "BOUND", "newRenewal": "Renewal", "region": "Malta", "status": "Bound", "quoteLeader": "A2B", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "inmobiliaria-don-salomon", "name": "INMOBILIARIA DON SALOMON", "producerId": "oneglobal-peru", "region": "", "enquiries": [{"id": "inmobiliaria-don-salomon-tbc", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "", "premium": "", "commission": "", "notes": "Cars/No EOM", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "maxlog-ffl", "name": "MAXLOG - FFL", "producerId": "integra", "region": "", "enquiries": [{"id": "maxlog-ffl-tbc", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "", "premium": "7500", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "mirage-trading-s-a", "name": "Mirage Trading S.A", "producerId": "latam-re", "region": "Panama", "enquiries": [{"id": "mirage-trading-s-a-01042026", "handler": "EW", "enquiryDate": "21/02/2026", "inceptionDate": "01/04/2026", "currency": "", "premium": "25000", "commission": "5000", "notes": "Latam Re advise firm order - looking to pick up terms quoted to CR / Chased 23/03", "newRenewal": "", "region": "Panama", "status": "Submission", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "bzs-transport-llc", "name": "BZS Transport LLC", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "bzs-transport-llc-11032026", "handler": "JK", "enquiryDate": "15/01/2026", "inceptionDate": "11/03/2026", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "sunset-converting-corp", "name": "Sunset Converting Corp", "producerId": "langelier", "region": "Canada", "enquiries": [{"id": "sunset-converting-corp-05032026", "handler": "MM", "enquiryDate": "12/02/2026", "inceptionDate": "05/03/2026", "currency": "USD", "premium": "20000", "commission": "2000", "notes": "Quoted 19/02", "newRenewal": "Renewal", "region": "Canada", "status": "Bound", "quoteLeader": "Markel", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "barnaby-ltd", "name": "Barnaby Ltd", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "barnaby-ltd-tbc", "handler": "MM", "enquiryDate": "", "inceptionDate": "", "currency": "", "premium": "", "commission": "", "notes": "Binned - too small", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "good-vibrations", "name": "Good Vibrations", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "good-vibrations-02042026", "handler": "MM", "enquiryDate": "12/03/2026", "inceptionDate": "02/04/2026", "currency": "USD", "premium": "", "commission": "", "notes": "Binned", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "life-electric-vehicles-inc", "name": "Life Electric Vehicles, Inc.", "producerId": "bridge-specialty", "region": "", "enquiries": [{"id": "life-electric-vehicles-i-09032026", "handler": "EW", "enquiryDate": "09/03/2026", "inceptionDate": "09/03/2026", "currency": "", "premium": "", "commission": "", "notes": "Portia Price/Slip to do. No feedback/comms between wholesaler and retailer have broken down.", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "castillomax-oil-and-gas-s-a-venezuel", "name": "CASTILLOMAX Oil and Gas S.A. (Venezuela)", "producerId": "pf-chile", "region": "", "enquiries": [{"id": "castillomax-oil-and-gas--09032026", "handler": "EW", "enquiryDate": "09/03/2026", "inceptionDate": "09/03/2026", "currency": "", "premium": "", "commission": "", "notes": "Compliance queries with producer?", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "denko-trading", "name": "DENKO Trading", "producerId": "khai-gemini-brokers", "region": "HK", "enquiries": [{"id": "denko-trading-16042026", "handler": "EW", "enquiryDate": "25/03/2026", "inceptionDate": "16/04/2026", "currency": "USD", "premium": "400000", "commission": "", "notes": "Questions back with producer? Are we losing the PD?\n\nIncome data: May 2025 \u00a34,917, Jun reversal -\u00a32,424. Net \u00a32,493. Renewal Apr 2026 \u2014 USD 400k premium, currently with Navium (AW Submission).", "newRenewal": "Renewal", "region": "HK", "status": "AW Submission", "quoteLeader": "Navium", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "pars-demi-ryolu-i-letmeci-li-i-anoni", "name": "PARS DEM\u0130RYOLU \u0130\u015eLETMEC\u0130L\u0130\u011e\u0130 ANON\u0130M \u015e\u0130RKET\u0130", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "pars-demi-ryolu-i-letmec-07042026", "handler": "KE", "enquiryDate": "25/03/2026", "inceptionDate": "07/04/2026", "currency": "EUR", "premium": "19500", "commission": "3900", "notes": "BOUND", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "Freeboard", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "forestal-del-sur", "name": "Forestal del Sur", "producerId": "strada-consulting", "region": "", "enquiries": [{"id": "forestal-del-sur-29042026", "handler": "KE", "enquiryDate": "N/A", "inceptionDate": "29/04/2026", "currency": "", "premium": "", "commission": "", "notes": "Producer: Strada Consulting (Pietro Sarti). Accounting flows through MDS Corredores de Reaseguros SA.\nRenewal information has been sent in by Pietro Sarti\n\nIncome data: Multiple MDS entries 2025/26. Renewal info received from Pietro Sarti. Apr 2026 inception.", "newRenewal": "Renewal", "region": "", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "tradezone", "name": "Tradezone", "producerId": "integra", "region": "", "enquiries": [{"id": "tradezone-01052026", "handler": "KE", "enquiryDate": "02/04/2026", "inceptionDate": "01/05/2026", "currency": "", "premium": "", "commission": "", "notes": "W/Josh", "newRenewal": "Renewal", "region": "", "status": "Renewal pending", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "paptrans", "name": "Paptrans", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "paptrans-03052026", "handler": "KE", "enquiryDate": "N/A", "inceptionDate": "03/05/2026", "currency": "EUR", "premium": "", "commission": "", "notes": "Renewal invite sent", "newRenewal": "Renewal", "region": "Turkey", "status": "Renewal pending", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "jefo-nutrition-bor-moved-away-from-l", "name": "Jefo Nutrition (BOR moved away from Langelier)", "producerId": "lareau", "region": "", "enquiries": [{"id": "jefo-nutrition-bor-moved-19052026", "handler": "KE", "enquiryDate": "N/A", "inceptionDate": "19/05/2026", "currency": "", "premium": "", "commission": "", "notes": "\n\nIncome data: Jun 2025 \u00a318,370. Renewal due May 2026 \u2014 broker moved from Langelier to Lareau/BOR.", "newRenewal": "Renewal", "region": "", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "semillas-batlle", "name": "Semillas Batlle", "producerId": "arb-international", "region": "", "enquiries": [{"id": "semillas-batlle-31052026", "handler": "KE", "enquiryDate": "", "inceptionDate": "31/05/2026", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "Renewal", "region": "", "status": "Renewal pending", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "dfds-poland", "name": "DFDS Poland", "producerId": "integra", "region": "", "enquiries": [{"id": "dfds-poland-31052026", "handler": "KE", "enquiryDate": "", "inceptionDate": "31/05/2026", "currency": "", "premium": "", "commission": "", "notes": "\n\nIncome data: Jul 2025 \u00a35,893. Feb/Mar 2026 near-zero.", "newRenewal": "Renewal", "region": "", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "image-trust", "name": "Image Trust", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "image-trust-08062026", "handler": "KE", "enquiryDate": "", "inceptionDate": "08/06/2026", "currency": "", "premium": "", "commission": "", "notes": "\n\nIncome data: Jul 2025 \u00a31,072. Renewal Jun 2026.", "newRenewal": "Renewal", "region": "", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "sumex-america-corp", "name": "SUMEX AMERICA CORP", "producerId": "argentum-re", "region": "", "enquiries": [{"id": "sumex-america-corp-ASAP", "handler": "EW", "enquiryDate": "06/04/2026", "inceptionDate": "ASAP", "currency": "USD", "premium": "20000", "commission": "2500", "notes": "C Hardy working on it.", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "patria-seguros-y-reaseguros-paraguay", "name": "PATRIA SEGUROS Y REASEGUROS (PARAGUAY) - O/A: PY FOODS", "producerId": "jnp-re", "region": "", "enquiries": [{"id": "patria-seguros-y-reasegu-ASAP", "handler": "EW", "enquiryDate": "01/04/2026", "inceptionDate": "ASAP", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "mon-meros-colombo-venezolanos-s-a", "name": "Mon\u00f3meros Colombo Venezolanos S.A", "producerId": "strada-consulting", "region": "", "enquiries": [{"id": "mon-meros-colombo-venezo-ASAP", "handler": "EW", "enquiryDate": "06/04/2026", "inceptionDate": "ASAP", "currency": "", "premium": "", "commission": "", "notes": "W/ Compliance and Translation team", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "grupo-titanio", "name": "Grupo Titanio", "producerId": "strada-consulting", "region": "", "enquiries": [{"id": "grupo-titanio-ASAP", "handler": "EW", "enquiryDate": "", "inceptionDate": "ASAP", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "silleno-cargo-project-cargo", "name": "Silleno Cargo - Project Cargo", "producerId": "energy-london", "region": "", "enquiries": [{"id": "silleno-cargo-project-ca-ASAP", "handler": "EW", "enquiryDate": "", "inceptionDate": "ASAP", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "euromaster", "name": "EUROMASTER", "producerId": "strada-consulting", "region": "", "enquiries": [{"id": "euromaster-ASAP", "handler": "EW", "enquiryDate": "02/04/2026", "inceptionDate": "ASAP", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "lx-pantos-logistics-panama-s-a-2026-", "name": "LX Pantos Logistics Panama, S.A.\u00a02026 - Stock-only Quote Invitation - Panama", "producerId": "momentum", "region": "", "enquiries": [{"id": "lx-pantos-logistics-pana-ASAP", "handler": "EW", "enquiryDate": "25/03/2026", "inceptionDate": "ASAP", "currency": "USD", "premium": "95000", "commission": "", "notes": "Awaiting on feedback?", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "yapi-merkezi", "name": "Yapi Merkezi", "producerId": "integra", "region": "", "enquiries": [{"id": "yapi-merkezi-08042026", "handler": "MM/EW", "enquiryDate": "08/04/2026", "inceptionDate": "", "currency": "", "premium": "", "commission": "", "notes": "", "newRenewal": "", "region": "", "status": "Submission", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "korver-ffl", "name": "KORVER - FFL", "producerId": "integra", "region": "", "enquiries": [{"id": "korver-ffl-asap", "handler": "MM", "enquiryDate": "25/03/2026", "inceptionDate": "asap", "currency": "", "premium": "", "commission": "", "notes": "FB declined due to project/oversized/specialsit loads ooa", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ship-rooster-ai-inc", "name": "Ship Rooster AI Inc", "producerId": "rt-specialty", "region": "USA", "enquiries": [{"id": "ship-rooster-ai-inc-01092025", "handler": "MM/EW", "enquiryDate": "01/09/2025", "inceptionDate": "01/09/2025", "currency": "USD", "premium": "15000", "commission": "1500", "notes": "QUOTED - terms sent to Producer, awaiting feedback, chased 11/02 and confirmed still awaiting decision / KE Chased 20/02 / hold open", "newRenewal": "New", "region": "USA", "status": "Quoted", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "origin-fevzi-gandur", "name": "Origin Fevzi Gandur", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "origin-fevzi-gandur-27112025", "handler": "KE", "enquiryDate": "27/10/2025", "inceptionDate": "27/11/2025", "currency": "EUR", "premium": "150000", "commission": "", "notes": "Cargo Liability RI via Freeboard Maritime binder. USD 2M limit each claim. Additional insureds include full Fevzi Gandur group entities. USD 150,000 premium.", "newRenewal": "New", "region": "Turkey", "status": "Bound", "quoteLeader": "Freeboard Maritime", "cedant": "Anadolu Sigorta A.\u015e.", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}, "placement": {"id": "origin-fgl-cli-2025-26", "period": "27 Nov 2025 \u2013 27 Nov 2026", "type": "Cargo Liability Reinsurance", "currency": "USD", "overseasBroker": "Integra (via Freeboard Maritime binder B1145M241254)", "totalPremium": 150000, "notes": "Cargo liability policy via Freeboard Maritime binder. Additional insureds: Fevzi Gandur Uluslararas\u0131 Lojistik, Stella Gemi, Worldwide E-ticaret, Fevzi Gandur Gemi Acenteli\u011fi, Fevzi Gandur D\u0131\u015f Ticaret, Pharma Care. Forecast gross freight receipts USD 125m.", "layers": [{"id": "origin-fgl-l1", "umr": "E250589", "description": "USD 2,000,000 each claim \u2014 cargo liability", "limitM": 2.0, "attachmentM": 0, "cedant": "Anadolu Sigorta A.\u015e.", "slipLeader": "Freeboard Maritime (Pen Underwriting)", "grossPremium": 150000, "brokerage": 0, "netPremium": 150000, "markets": [{"name": "Lloyd's of London via Freeboard Maritime", "syndicate": "B1145M241254", "written": 100.0, "signed": 100.0, "note": "Line To Stand \u2014 100% Lloyd's of London"}]}]}}], "emails": [], "slips": []}, {"id": "inpasa-grenco-tankage-operation", "name": "Inpasa Grenco - Tankage Operation", "producerId": "oneglobal-brazil", "region": "Brazil", "enquiries": [{"id": "inpasa-grenco-tankage-op-23102025", "handler": "KE", "enquiryDate": "23/10/2025", "inceptionDate": "23/10/2025", "currency": "USD", "premium": "", "commission": "4000", "notes": "Quoted 17/11 - Latest chase 08/12 - crickets (will close for now)", "newRenewal": "N", "region": "Brazil", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "the-bruery-llc-et-al", "name": "The Bruery, LLC; et al", "producerId": "hull-co", "region": "UK", "enquiries": [{"id": "the-bruery-llc-et-al-13122025", "handler": "JK", "enquiryDate": "23/10/2025", "inceptionDate": "13/12/2025", "currency": "USD", "premium": "", "commission": "2100", "notes": "Local broker cheaper", "newRenewal": "N", "region": "UK", "status": "Dead", "quoteLeader": "Contour", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "glengyle", "name": "Glengyle", "producerId": "houlders", "region": "Hong Kong", "enquiries": [{"id": "glengyle-24102025", "handler": "KE", "enquiryDate": "24/10/2025", "inceptionDate": "24/10/2025", "currency": "", "premium": "200000", "commission": "20000", "notes": "Leader terms provided - gone quiet.", "newRenewal": "N", "region": "Hong Kong", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "universal-acarsan-group", "name": "Universal Acarsan Group", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "universal-acarsan-group-30112025", "handler": "KE", "enquiryDate": "20/11/2025", "inceptionDate": "30/11/2025", "currency": "USD", "premium": "0", "commission": "0", "notes": "55M of stock in Iraq - request for clarifications sent. Awaiting data. - chased 16/12 no info", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "N/A", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "la-consolidada-paraguay", "name": "LA CONSOLIDADA (PARAGUAY)", "producerId": "jnp-re", "region": "Paraguay", "enquiries": [{"id": "la-consolidada-paraguay-30112025", "handler": "KE", "enquiryDate": "03/11/2025", "inceptionDate": "30/11/2025", "currency": "USD", "premium": "0", "commission": "0", "notes": "Have asked for full proposal. Kether chased on 26.11.", "newRenewal": "New", "region": "Paraguay", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "sunar-misir-stp", "name": "SUNAR MISIR STP", "producerId": "integra", "region": "", "enquiries": [{"id": "sunar-misir-stp-27102025", "handler": "KE", "enquiryDate": "27/10/2025", "inceptionDate": "27/10/2025", "currency": "EUR", "premium": "300000", "commission": "30000", "notes": "Quoted - chasing feedback", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "byd-mexico", "name": "BYD Mexico", "producerId": "sky-re", "region": "", "enquiries": [{"id": "byd-mexico-01112025", "handler": "EW", "enquiryDate": "28/10/2025", "inceptionDate": "01/11/2025", "currency": "USD", "premium": "", "commission": "30000", "notes": "Quoted/Looking for front - closed subject to Sky Re finding fronting solution 16/12", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "Landmark", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "muresa-intertrade", "name": "Muresa Intertrade", "producerId": "momentum", "region": "Panama", "enquiries": [{"id": "muresa-intertrade-09122025", "handler": "KE", "enquiryDate": "12/11/2025", "inceptionDate": "09/12/2025", "currency": "USD", "premium": "40000", "commission": "4000", "notes": "Quoted. Chased on 02 Dec 2025.", "newRenewal": "New", "region": "Panama", "status": "Bound", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "precision-citrus-hedging", "name": "Precision Citrus Hedging", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "precision-citrus-hedging-09122025", "handler": "KE", "enquiryDate": "30/10/2025", "inceptionDate": "09/12/2025", "currency": "USD", "premium": "", "commission": "", "notes": "Contractors Plant & Equipment - Seeking solution", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "cooprocarcat-mining-cooperative-coal", "name": "COOPROCARCAT MINING COOPERATIVE (Coal)", "producerId": "oneglobal-colombia", "region": "", "enquiries": [{"id": "cooprocarcat-mining-coop-31102025", "handler": "EW", "enquiryDate": "31/10/2025", "inceptionDate": "31/10/2025", "currency": "USD", "premium": "", "commission": "", "notes": "Have asked for full proposal from Jorge - not received as at 16/12", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "rush-golfscapes-llc-cpe", "name": "RUSH  Golfscapes, LLC CPE", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "rush-golfscapes-llc-cpe-31102025", "handler": "KE", "enquiryDate": "31/10/2025", "inceptionDate": "31/10/2025", "currency": "USD", "premium": "", "commission": "", "notes": "Contractors Plant & Equipment - Seeking solution", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "slb-equipment-list-of-trailers", "name": "SLB Equipment list of trailers", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "slb-equipment-list-of-tr-31102025", "handler": "KE", "enquiryDate": "31/10/2025", "inceptionDate": "31/10/2025", "currency": "USD", "premium": "", "commission": "", "notes": "Contractors Plant & Equipment - Seeking solution", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ygl-lojistik", "name": "YGL Lojistik", "producerId": "kmc", "region": "Turkey", "enquiries": [{"id": "ygl-lojistik-11122025", "handler": "KE", "enquiryDate": "12/12/2025", "inceptionDate": "11/12/2025", "currency": "EUR", "premium": "0", "commission": "0", "notes": "UW's questions have been sent over to the client - no reply -closing file", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "Freeboard", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "chalhoub-group", "name": "Chalhoub Group", "producerId": "oneglobal-dubai", "region": "", "enquiries": [{"id": "chalhoub-group-01122025", "handler": "EW", "enquiryDate": "03/11/2025", "inceptionDate": "01/12/2025", "currency": "USD", "premium": "", "commission": "30000", "notes": "Discussed with Starr & RSA. Eva been chased for key information.", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "fuelpar", "name": "FUELPAR", "producerId": "jnp-re", "region": "Bolivia", "enquiries": [{"id": "fuelpar-22122025", "handler": "EW", "enquiryDate": "16/12/2025", "inceptionDate": "22/12/2025", "currency": "USD", "premium": "15000", "commission": "1500", "notes": "Indicated on 16 Dec 2025. Put a draft quote slip across to him - no reply as at 05/01/26 so closing", "newRenewal": "New", "region": "Bolivia", "status": "Dead", "quoteLeader": "Fiducia.", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "erkport", "name": "ERKPort", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "erkport-30122025", "handler": "KE", "enquiryDate": "11/12/2025", "inceptionDate": "30/12/2025", "currency": "USD", "premium": "750000", "commission": "75000", "notes": "Cars - primary indication with Joe Danphal - local market (Axa) super cheap - closed", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "Landmark", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "etanoles-del-magdalena", "name": "Etanoles Del Magdalena", "producerId": "oneglobal-colombia", "region": "Colombia", "enquiries": [{"id": "etanoles-del-magdalena-31122025", "handler": "EW", "enquiryDate": "07/11/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "10000", "commission": "1000", "notes": "Chased Quote Feedback 01/12 -cedants have issues with Fiducia - no feedback so closing", "newRenewal": "New", "region": "Colombia", "status": "Dead", "quoteLeader": "WISE / Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "evolog-nakli-yat-i-hti-yari-ffl-dest", "name": "EVOLOG NAKL\u0130YAT \u0130HT\u0130YAR\u0130 FFL DESTEK TALEB\u0130 HK.", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "evolog-nakli-yat-i-hti-y-31122025", "handler": "KE", "enquiryDate": "03/12/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "115000", "commission": "23000", "notes": "Freeboard indicated $110k with a 12.5k deductible - chased 16/12, 05/01 - closing", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "Freeboard Maritime", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "triangle-commodities-trading", "name": "TRIANGLE COMMODITIES TRADING", "producerId": "oneglobal-dubai", "region": "", "enquiries": [{"id": "triangle-commodities-tra-05112025", "handler": "EW", "enquiryDate": "05/11/2025", "inceptionDate": "05/11/2025", "currency": "USD", "premium": "", "commission": "2500", "notes": "Awaiting information. Ed chased on 26.11.2025 & 02.12.2025", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "N/A", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "irmak-warehousing", "name": "Irmak Warehousing", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "irmak-warehousing-31122025", "handler": "KE", "enquiryDate": "16/12/2025", "inceptionDate": "31/12/2025", "currency": "EUR", "premium": "150000", "commission": "30000", "notes": "Primary EUR 25M quoted - (options needed for 25M X 25 and 55M X 25M)", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "50% Contour", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "logitrans", "name": "Logitrans", "producerId": "kmc", "region": "Turkey", "enquiries": [{"id": "logitrans-31122025", "handler": "KE", "enquiryDate": "16/12/2025", "inceptionDate": "31/12/2025", "currency": "", "premium": "0", "commission": "0", "notes": "Too claims intensive for London - Nil deductible - closing", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "nasser-bin-abdullatif-alserkal-group", "name": "Nasser Bin Abdullatif Alserkal Group (Tyres)", "producerId": "oneglobal-dubai", "region": "UAE", "enquiries": [{"id": "nasser-bin-abdullatif-al-31122025", "handler": "EW", "enquiryDate": "27/11/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "200000", "commission": "20000", "notes": "Unable to compete with regional market deductibles and pricing.", "newRenewal": "New", "region": "UAE", "status": "Dead", "quoteLeader": "Fiducia.", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "natural-ag-solutions-llc", "name": "Natural AG Solutions, LLC,", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "natural-ag-solutions-llc-01122025", "handler": "KE", "enquiryDate": "17/11/2025", "inceptionDate": "01/12/2025", "currency": "USD", "premium": "", "commission": "0", "notes": "For Property", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "vital-planet-llc", "name": "Vital Planet LLC", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "vital-planet-llc-11122025", "handler": "KE", "enquiryDate": "17/11/2025", "inceptionDate": "11/12/2025", "currency": "", "premium": "", "commission": "", "notes": "Contour advise far too cheap", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "name-tbc-childrens-arts-supplies", "name": "Name TBC (Childrens Arts supplies)", "producerId": "rt-specialty", "region": "USA", "enquiries": [{"id": "name-tbc-childrens-arts--31122025", "handler": "EW", "enquiryDate": "19/11/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "0", "commission": "0", "notes": "Not Quoted - Not Required", "newRenewal": "New", "region": "USA", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "kupfer-hnos", "name": "Kupfer HNOS", "producerId": "strada-consulting", "region": "Chile", "enquiries": [{"id": "kupfer-hnos-31122025", "handler": "EW", "enquiryDate": "18/11/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "225000", "commission": "22500", "notes": "$225k VVRI from Fiducia - claims record shit - asked for RM deets 02/12", "newRenewal": "New", "region": "Chile", "status": "Dead", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "sutton-services-llc", "name": "Sutton Services LLC", "producerId": "rt-specialty", "region": "", "enquiries": [{"id": "sutton-services-llc-19112025", "handler": "KE", "enquiryDate": "19/11/2025", "inceptionDate": "19/11/2025", "currency": "", "premium": "", "commission": "", "notes": "Local retailer radio silence", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "akikb-minibodegas-spa", "name": "AKIKB MINIBODEGAS SPA", "producerId": "lillenfeld", "region": "", "enquiries": [{"id": "akikb-minibodegas-spa-20112025", "handler": "KE", "enquiryDate": "20/11/2025", "inceptionDate": "20/11/2025", "currency": "", "premium": "", "commission": "", "notes": "Storage facilities. Queries out with producer. Yellow storage esq. -silence / closing 16/12", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "euroherc-insurance", "name": "Euroherc Insurance", "producerId": "fortus-inter-partes", "region": "", "enquiries": [{"id": "euroherc-insurance-20112025", "handler": "KE", "enquiryDate": "20/11/2025", "inceptionDate": "20/11/2025", "currency": "USD", "premium": "", "commission": "10000", "notes": "Bought Locally", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "sunwoda-mobility-energy-technology-c", "name": "SUNWODA MOBILITY ENERGY TECHNOLOGY CO., LTD", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "sunwoda-mobility-energy--20112025", "handler": "KE", "enquiryDate": "20/11/2025", "inceptionDate": "20/11/2025", "currency": "", "premium": "", "commission": "", "notes": "With UW's 25/11/2025. Quoted. Placed locally", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "N/A", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "orion-ffl-tekli-f-talebi-hk", "name": "ORION FFL TEKL\u0130F TALEB\u0130 HK", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "orion-ffl-tekli-f-talebi-31122025", "handler": "KE", "enquiryDate": "09/12/2025", "inceptionDate": "31/12/2025", "currency": "EUR", "premium": "11500", "commission": "2300", "notes": "Quoted 17/12, No feedback as at 05/01 so closing file.", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "Freeboard Maritime", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "unimog", "name": "UNIMOG", "producerId": "sky-re", "region": "", "enquiries": [{"id": "unimog-21112025", "handler": "EW", "enquiryDate": "21/11/2025", "inceptionDate": "21/11/2025", "currency": "USD", "premium": "", "commission": "", "notes": "AMP Quoted. Chased on 16.12.2025", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "seafrost", "name": "Seafrost", "producerId": "oneglobal-peru", "region": "Peru", "enquiries": [{"id": "seafrost-31122025", "handler": "EW", "enquiryDate": "28/10/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "150000", "commission": "15000", "notes": "Quoted - OGB Peru still working with cedant 15/12 - no reply for over a month closed file as at 05/01/26", "newRenewal": "New", "region": "Peru", "status": "Dead", "quoteLeader": "Fiducia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "servicio-huan-maro-s-a-de-c-v", "name": "Servicio Huan\u00edmaro, S.A. de C.V.,", "producerId": "sky-re", "region": "Mexico", "enquiries": [{"id": "servicio-huan-maro-s-a-d-31122025", "handler": "EW", "enquiryDate": "25/11/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "20000", "commission": "2000", "notes": "Quoted 15/12/25 , no feedback as at 05/01/2026 so closing", "newRenewal": "New", "region": "Mexico", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "jacob-jacob", "name": "JACOB & JACOB", "producerId": "sky-re", "region": "", "enquiries": [{"id": "jacob-jacob-01122025", "handler": "EW", "enquiryDate": "29/11/2025", "inceptionDate": "01/12/2025", "currency": "USD", "premium": "", "commission": "1000", "notes": "Indicated on 01/12/2025. Ed chased on 04.12.2025.", "newRenewal": "", "region": "", "status": "Dead", "quoteLeader": "Fiducia.", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "yalova-roro-excess-whll", "name": "YALOVA RORO EXCESS WHLL", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "yalova-roro-excess-whll-31122025", "handler": "KE", "enquiryDate": "04/11/2025", "inceptionDate": "31/12/2025", "currency": "EUR", "premium": "135000", "commission": "27000", "notes": "Quoted - Integra pushing for order 09/12 - Feedback is that this is expensive although they do not have other quotes", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "Contour 50%", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "innospace-do-brasil-ltd", "name": "Innospace do Brasil Ltd", "producerId": "oneglobal-brazil", "region": "Brazil", "enquiries": [{"id": "innospace-do-brasil-ltd-31122025", "handler": "MM", "enquiryDate": "22/12/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "0", "commission": "0", "notes": "Sent over to Christian Warren, not one for us.", "newRenewal": "New", "region": "Brazil", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ody-lojistik", "name": "ODY Lojistik", "producerId": "kmc", "region": "Turkey", "enquiries": [{"id": "ody-lojistik-31122025", "handler": "KE", "enquiryDate": "10/12/2025", "inceptionDate": "31/12/2025", "currency": "EUR", "premium": "0", "commission": "0", "notes": "Info not provided - closing files", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "akar-i-ve-d-tic-ltd-ti", "name": "AKAR \u0130\u00e7 ve D\u0131\u015f Tic. Ltd. \u015eti.", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "akar-i-ve-d-tic-ltd-ti-22122025", "handler": "KE", "enquiryDate": "03/12/2025", "inceptionDate": "22/12/2025", "currency": "", "premium": "", "commission": "", "notes": "Too much Russia / Ukraine exposure to quote", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "Freeboard Maritime", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "asav-ffl", "name": "Asav FFL", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "asav-ffl-15122025", "handler": "KE", "enquiryDate": "08/12/2025", "inceptionDate": "15/12/2025", "currency": "EUR", "premium": "33000", "commission": "", "notes": "Producer has requested to bind coverage as of 15/12", "newRenewal": "New", "region": "Turkey", "status": "Bound", "quoteLeader": "Freeboard Maritime", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "gemlik-cargo-plus-war", "name": "Gemlik Cargo plus War", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "gemlik-cargo-plus-war-08122025", "handler": "KE", "enquiryDate": "08/12/2025", "inceptionDate": "08/12/2025", "currency": "USD", "premium": "", "commission": "", "notes": "Too small to quote", "newRenewal": "New", "region": "Turkey", "status": "Dead", "quoteLeader": "N/A", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "cma-paraguay-s-a", "name": "CMA Paraguay S.A.", "producerId": "jnp-re", "region": "Paraguay", "enquiries": [{"id": "cma-paraguay-s-a-01012026", "handler": "KE", "enquiryDate": "01/12/2025", "inceptionDate": "01/01/2026", "currency": "USD", "premium": "25000", "commission": "2500", "notes": "Quoted 25,000 10/12 - only 39% order / have asked for local slip 16/12", "newRenewal": "New", "region": "Paraguay", "status": "Dead", "quoteLeader": "Fidcuia", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "fevzi-gandur-whll", "name": "Fevzi Gandur - WHLL", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "fevzi-gandur-whll-27112025", "handler": "KE", "enquiryDate": "27/10/2025", "inceptionDate": "27/11/2025", "currency": "EUR", "premium": "22500", "commission": "4500", "notes": "Quoted - Integra presenting 18/11 - chased 16/12 - Integra working on FO", "newRenewal": "New", "region": "Turkey", "status": "Bound", "quoteLeader": "Contour / Landmark", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "tlm-ffl", "name": "TLM FFL", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "tlm-ffl-31122025", "handler": "EW", "enquiryDate": "23/12/2025", "inceptionDate": "31/12/2025", "currency": "USD", "premium": "12000", "commission": "", "notes": "Firm Order in. Awaiting Freeboard docs.", "newRenewal": "New", "region": "Turkey", "status": "Bound", "quoteLeader": "Freeboard Maritime", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ekol-lojistik-as", "name": "Ekol Lojistik AS", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "ekol-lojistik-as-income", "handler": "KE", "enquiryDate": "", "inceptionDate": "01/07/2026", "currency": "EUR", "premium": "1013000", "commission": "", "notes": "WHLL programme \u2014 4 layers, 4 cedants. EUR 1,013,000 total gross premium. EUR 799,200 net to markets. Nil loss history to layer.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}, "placement": {"id": "ekol-whll-2025-26", "period": "1 Jul 2025 \u2013 30 Jun 2026", "type": "Excess Warehouse Legal Liability Reinsurance", "currency": "EUR", "overseasBroker": "Integra Sigorta ve Reas\u00fcrans Brokerli\u011fi A.\u015e.", "totalPremium": 1013000, "layers": [{"id": "ekol-l1", "umr": "B1743ONEMC2515185", "description": "EUR 100M xs EUR 100M", "limitM": 100, "attachmentM": 100, "cedant": "HDI Sigorta", "slipLeader": "CNA Hardy", "grossPremium": 183000, "brokerage": 20.0, "netPremium": 146400, "markets": [{"name": "CNA Hardy", "syndicate": "0382", "written": 15.0, "signed": 13.96}, {"name": "MS Amlin", "syndicate": "2001", "written": 12.5, "signed": 11.63}, {"name": "Everest", "syndicate": "2786", "written": 10.0, "signed": 9.3}, {"name": "Talbot", "syndicate": "1183", "written": 15.0, "signed": 13.95}, {"name": "Markel", "syndicate": "3000", "written": 15.0, "signed": 13.95}, {"name": "Canopius", "syndicate": "4444", "written": 7.5, "signed": 6.98}, {"name": "Ark", "syndicate": "4020", "written": 10.0, "signed": 9.3}, {"name": "Aviva", "syndicate": "4044019", "written": 10.0, "signed": 9.3}, {"name": "Berkshire Hathaway Specialty", "syndicate": "off-platform", "written": 7.5, "signed": 6.98}, {"name": "Freeboard Maritime", "syndicate": "off-platform", "written": 5.0, "signed": 4.65}]}, {"id": "ekol-l2", "umr": "B1743ONEMC2516060", "description": "EUR 200M xs EUR 200M", "limitM": 200, "attachmentM": 200, "cedant": "Turkiye Sigorta A.\u015e.", "slipLeader": "Navium Marine", "grossPremium": 260000, "brokerage": 26.5, "netPremium": 191100, "markets": [{"name": "Navium / Fidelis", "syndicate": "NAV", "written": 15.0, "signed": 12.78}, {"name": "AXIS", "syndicate": "1686", "written": 15.0, "signed": 12.77}, {"name": "Allied World", "syndicate": "2232", "written": 7.5, "signed": 6.38}, {"name": "The Hartford", "syndicate": "1221", "written": 7.5, "signed": 6.38}, {"name": "Convex", "syndicate": "C9800", "written": 10.0, "signed": 8.51}, {"name": "Arch", "syndicate": "AAL2012/ASL1955", "written": 7.5, "signed": 6.38}, {"name": "Lancashire", "syndicate": "LRE9329", "written": 7.5, "signed": 6.38}, {"name": "Ascot", "syndicate": "ASC4872", "written": 10.0, "signed": 8.51}, {"name": "Hiscox", "syndicate": "033", "written": 10.0, "signed": 8.51}, {"name": "Chubb", "syndicate": "2488", "written": 20.0, "signed": 17.02}, {"name": "Antares", "syndicate": "1274", "written": 7.5, "signed": 6.38}]}, {"id": "ekol-l3", "umr": "B1743ONEMC2540509", "description": "EUR 45M xs EUR 5M", "limitM": 45, "attachmentM": 5, "cedant": "T\u00fcrkiye Sigorta A.\u015e.", "slipLeader": "Chubb (CGM 2488)", "grossPremium": 390000, "brokerage": 19.0, "netPremium": 315900, "markets": [{"name": "Chubb", "syndicate": "2488", "written": 15.0, "signed": 11.77}, {"name": "Convex", "syndicate": "C9800", "written": 10.0, "signed": 7.85}, {"name": "Argenta", "syndicate": "2121", "written": 5.0, "signed": 3.93}, {"name": "Markel", "syndicate": "3000", "written": 15.0, "signed": 11.76}, {"name": "IQUW", "syndicate": "1856", "written": 10.0, "signed": 7.84}, {"name": "Canopius", "syndicate": "4444", "written": 5.0, "signed": 3.92}, {"name": "AXIS", "syndicate": "1686", "written": 10.0, "signed": 7.84}, {"name": "Talbot", "syndicate": "1183", "written": 10.0, "signed": 7.84}, {"name": "Hiscox", "syndicate": "033", "written": 10.0, "signed": 7.84}, {"name": "Freeboard Maritime", "syndicate": "off-platform", "written": 20.0, "signed": 15.69}, {"name": "Landmark Chelsea / AMFirst", "syndicate": "off-platform", "written": 7.5, "signed": 5.88}, {"name": "Contour", "syndicate": "off-platform", "written": 10.0, "signed": 7.84}]}, {"id": "ekol-l4", "umr": "B1743ONEMC2576888", "description": "EUR 50M xs EUR 50M", "limitM": 50, "attachmentM": 50, "cedant": "AK Sigorta A.S.", "slipLeader": "Navium Marine", "grossPremium": 180000, "brokerage": 19.0, "netPremium": 145800, "markets": [{"name": "Navium / Fidelis", "syndicate": "NAV", "written": 25.0, "signed": 22.73}, {"name": "Chaucer", "syndicate": "C9701", "written": 20.0, "signed": 18.18}, {"name": "Argenta", "syndicate": "2121", "written": 10.0, "signed": 9.09}, {"name": "CNA Hardy", "syndicate": "0382", "written": 15.0, "signed": 13.64}, {"name": "IQUW", "syndicate": "1856", "written": 20.0, "signed": 18.18}, {"name": "Chubb", "syndicate": "2488", "written": 20.0, "signed": 18.18}]}]}}], "emails": [], "slips": []}, {"id": "sunel-tobacco", "name": "Sunel Tobacco", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "sunel-tobacco-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Renews later 2026", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "tiryaki-agro-gida-sanayi-ve-ticaret-", "name": "Tiryaki Agro Gida Sanayi Ve Ticaret A.S.", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "tiryaki-agro-gida-sanayi-ve-ticaret--income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Jan, Feb, Dec 2025 bookings. Dec \u00a32,932.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "gefco-tasimacilik-ve-lojistik-as", "name": "Gefco Tasimacilik Ve Lojistik AS", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "gefco-tasimacilik-ve-lojistik-as-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Mar 2025 \u00a338,183. Now CEVA \u2014 renewal Apr 2026 \u00a367,167.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "kayikcioglu-kadoline-trans", "name": "Kayikcioglu Kadoline Trans", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "kayikcioglu-kadoline-trans-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "May 2025 booking, Jun reversal. Net zero.\nCancelled ab initio", "newRenewal": "Renewal", "region": "Turkey", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "dnt-uluslararasi-nakliye", "name": "DNT Uluslararasi Nakliye", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "dnt-uluslararasi-nakliye-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Jul 2025 \u00a37,403.\nJuly 2026 renewal", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "gumustas-lojistik", "name": "Gumustas Lojistik", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "gumustas-lojistik-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Jul 2025 \u00a32,435. Aug zero.\n2026 renewal expected", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "hakan-gida", "name": "Hakan Gida", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "hakan-gida-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Jul/Aug/Sep 2025 \u2014 all negative adjustments. Net -\u00a33,989.", "newRenewal": "Renewal", "region": "Turkey", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "asbas-marine", "name": "Asbas Marine", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "asbas-marine-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Renews later 2026", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "metal-market-international", "name": "Metal Market International", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "metal-market-international-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Dec 2025 \u00a39,615.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "origin-fgl-lojistik-a-s", "name": "Origin FGL Lojistik A.S", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "origin-fgl-lojistik-a-s-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Same risk as Origin Fevzi Gandur \u2014 cargo liability RI via Freeboard Maritime. USD 150,000 premium. Dec 2025 income: \u00a322,425.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "Anadolu Sigorta A.\u015e.", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}, "placement": {"id": "origin-fgl-cli-2025-26", "period": "27 Nov 2025 \u2013 27 Nov 2026", "type": "Cargo Liability Reinsurance", "currency": "USD", "overseasBroker": "Integra (via Freeboard Maritime binder B1145M241254)", "totalPremium": 150000, "notes": "Cargo liability policy via Freeboard Maritime binder. Additional insureds: Fevzi Gandur Uluslararas\u0131 Lojistik, Stella Gemi, Worldwide E-ticaret, Fevzi Gandur Gemi Acenteli\u011fi, Fevzi Gandur D\u0131\u015f Ticaret, Pharma Care. Forecast gross freight receipts USD 125m.", "layers": [{"id": "origin-fgl-l1", "umr": "E250589", "description": "USD 2,000,000 each claim \u2014 cargo liability", "limitM": 2.0, "attachmentM": 0, "cedant": "Anadolu Sigorta A.\u015e.", "slipLeader": "Freeboard Maritime (Pen Underwriting)", "grossPremium": 150000, "brokerage": 0, "netPremium": 150000, "markets": [{"name": "Lloyd's of London via Freeboard Maritime", "syndicate": "B1145M241254", "written": 100.0, "signed": 100.0, "note": "Line To Stand \u2014 100% Lloyd's of London"}]}]}}], "emails": [], "slips": []}, {"id": "tlc-klima-san-ve-tic-a-s", "name": "TLC Klima San. Ve Tic. A.S.", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "tlc-klima-san-ve-tic-a-s-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Renews later 2026", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "cobantur-logistics", "name": "Cobantur Logistics", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "cobantur-logistics-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Feb 2026 \u00a36,005.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "sasa-polyester", "name": "SASA Polyester", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "sasa-polyester-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Feb 2026 \u00a34,625.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "tech-enerji-danismanlik-ltd-sti", "name": "Tech Enerji Danismanlik Ltd STI", "producerId": "integra", "region": "Turkey", "enquiries": [{"id": "tech-enerji-danismanlik-ltd-sti-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Apr 2026 \u00a31,213.", "newRenewal": "Renewal", "region": "Turkey", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "semex-canada", "name": "Semex Canada", "producerId": "langelier", "region": "Canada", "enquiries": [{"id": "semex-canada-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "CAD", "premium": "", "commission": "", "notes": "Sep 2025 \u00a3368, Dec \u00a3566, Jan 2026 \u00a3464.", "newRenewal": "Renewal", "region": "Canada", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "soline-trading-ltd", "name": "Soline Trading Ltd", "producerId": "langelier", "region": "Canada", "enquiries": [{"id": "soline-trading-ltd-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "CAD", "premium": "", "commission": "", "notes": "Aug 2025 \u00a31,347.\nAugust 2026 renewal expected", "newRenewal": "Renewal", "region": "Canada", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "semex-inc", "name": "Semex Inc", "producerId": "langelier", "region": "Canada", "enquiries": [{"id": "semex-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Feb 2026 \u00a3368. Sister entity to Semex Canada.", "newRenewal": "Renewal", "region": "Canada", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "tole-catalana", "name": "TOLE Catalana", "producerId": "arb-international", "region": "Spain", "enquiries": [{"id": "tole-catalana-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Jan 2025 \u00a32,096.", "newRenewal": "Renewal", "region": "Spain", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "serradora-boix", "name": "Serradora Boix", "producerId": "arb-international", "region": "Spain", "enquiries": [{"id": "serradora-boix-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Mar 2025 \u00a32,511. Jun reversal. Dec \u00a32,870. ARB Europe.\nCancelled ab initio", "newRenewal": "Renewal", "region": "Spain", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "calconut-sl", "name": "Calconut SL", "producerId": "arb-international", "region": "Spain", "enquiries": [{"id": "calconut-sl-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "EUR", "premium": "", "commission": "", "notes": "Aug \u00a33,032, Sep \u00a3394, Dec \u00a32,870. ARB Europe.", "newRenewal": "Renewal", "region": "Spain", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "mote-marine-laboratory-inc", "name": "Mote Marine Laboratory Inc", "producerId": "rt-specialty", "region": "USA", "enquiries": [{"id": "mote-marine-laboratory-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Mar 2025 \u00a31,941. Jan 2026 \u00a31,855.", "newRenewal": "Renewal", "region": "USA", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "merits-health-products-inc", "name": "Merits Health Products Inc", "producerId": "rt-specialty", "region": "USA", "enquiries": [{"id": "merits-health-products-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Aug 2025 \u00a35,989. Jan 2026 \u00a3103.", "newRenewal": "Renewal", "region": "USA", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "bill-casey-electric-sales-inc", "name": "Bill Casey Electric Sales Inc", "producerId": "rt-specialty", "region": "USA", "enquiries": [{"id": "bill-casey-electric-sales-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Renews later 2026", "newRenewal": "Renewal", "region": "USA", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "vtc-operadora-logistica-ltda", "name": "VTC Operadora Logistica Ltda", "producerId": "bms-brasil", "region": "Brazil", "enquiries": [{"id": "vtc-operadora-logistica-ltda-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Apr 2025 reversal, Jul 2025 \u00a35,880. BMS Brasil.", "newRenewal": "Renewal", "region": "Brazil", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "extrum-sa", "name": "Extrum SA", "producerId": "pacific-insurance", "region": "Chile", "enquiries": [{"id": "extrum-sa-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Mar 2025 \u00a32,620. Jun reversal. Pacific Insurance Brokers.\nCancelled ab initio", "newRenewal": "Renewal", "region": "Chile", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "brimich-logistics-and-packaging-inc", "name": "Brimich Logistics and Packaging Inc", "producerId": "jonasre", "region": "Canada", "enquiries": [{"id": "brimich-logistics-and-packaging-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "CAD", "premium": "", "commission": "", "notes": "JonasRe \u2014 negative 2025. Apr -\u00a3307, May -\u00a34,053. Partner review flagged.\nLost on BOR", "newRenewal": "Renewal", "region": "Canada", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "harvest-marketing-trading-llc", "name": "Harvest Marketing & Trading LLC", "producerId": "charter", "region": "USA", "enquiries": [{"id": "harvest-marketing-trading-llc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Nov 2025 \u00a37,299. Charter.", "newRenewal": "Renewal", "region": "USA", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "volcafe-uk", "name": "Volcafe UK", "producerId": "volcafe-uk", "region": "UK", "enquiries": [{"id": "volcafe-uk-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "GBP", "premium": "", "commission": "", "notes": "Sep 2025 \u00a3792.\nLocal policy placed as favour \u2014 small fee income", "newRenewal": "Renewal", "region": "UK", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "guy-d-anjou-inc", "name": "Guy D'Anjou Inc", "producerId": "bfl-canada", "region": "Canada", "enquiries": [{"id": "guy-d-anjou-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "CAD", "premium": "", "commission": "", "notes": "Aug 2025 \u00a311. BFL Canada.\nLapsed", "newRenewal": "Renewal", "region": "Canada", "status": "Dead", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "strides-pharma-inc", "name": "Strides Pharma Inc", "producerId": "prudent", "region": "India", "enquiries": [{"id": "strides-pharma-inc-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Feb 2026 \u00a324,279. Prudent Insurance Brokers.", "newRenewal": "Renewal", "region": "India", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "distribeaute-sa", "name": "Distribeaute SA", "producerId": "latam-re", "region": "Canada", "enquiries": [{"id": "distribeaute-sa-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Dec 2025 \u00a31,682 (Oneglobal Colombia). Feb 2026 \u00a31,839 (Latam Re). Feb 2026 reversal -\u00a31,655.", "newRenewal": "Renewal", "region": "Canada", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "yaafar-internacional-s-a", "name": "YAAFAR INTERNACIONAL S.A.", "producerId": "latam-re", "region": "Panama", "enquiries": [{"id": "yaafar-internacional-s-a-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Apr 2026 \u00a38,562. Latam Re.", "newRenewal": "Renewal", "region": "Panama", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ink-consulting-sarl", "name": "Ink Consulting SARL", "producerId": "ink-consulting", "region": "", "enquiries": [{"id": "ink-consulting-sarl-income", "handler": "", "enquiryDate": "", "inceptionDate": "", "currency": "USD", "premium": "", "commission": "", "notes": "Apr 2026 \u00a310,484.", "newRenewal": "Renewal", "region": "", "status": "Bound", "quoteLeader": "", "cedant": "", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}}], "emails": [], "slips": []}, {"id": "ppaq", "name": "PPAQ \u2014 Producteurs et Productrices Acericoles du Quebec", "producerId": "langelier", "region": "Canada", "enquiries": [{"id": "ppaq-22122025", "handler": "KE", "enquiryDate": "01/12/2024", "inceptionDate": "22/12/2025", "currency": "CAD", "premium": "355279", "commission": "97702", "notes": "STP + Excess Stock. Primary CAD 75M (B1743MC2533330) + 2nd XS CAD 100M xs 75M (B1743MC2597987). Total gross CAD 355,278.76. Brokerage 27.50% both layers. Renewal Dec 2026.", "newRenewal": "Renewal", "region": "Canada", "status": "Bound", "quoteLeader": "Aviva (primary) / Talbot (excess)", "cedant": "La Financi\u00e8re Agricole du Quebec", "postBind": {"eoc": "", "openingMemo": "", "imageRight": "", "eclipse": "", "invoiced": "", "sharepoint": "", "gfr": ""}, "placement": {"id": "ppaq-stp-2025-26", "period": "22 Dec 2025 \u2013 21 Dec 2026", "type": "Stock Throughput + Excess Stock Insurance", "currency": "CAD", "overseasBroker": "Langelier Assurances, 550 Chamble Road Suite 230, Longueuil QC J4H 3L8", "totalPremium": 355279, "notes": "Loss payees: La Financi\u00e8re Agricole du Quebec; La Banque Nationale du Canada; The Maple Treat Corporation. Profit commission 10% on primary. 3 warehouse locations: (1) 326 rue Tanguay Laurierville \u2014 pasteurisation + storage; (2) 1650 route de l'\u00c9glise St-Antoine de Tilly \u2014 storage; (3) 2555 Avenue Alphonse Poulin Plessisville \u2014 storage (att. Apr 2024). Transit: CAD 225k any one conveyance, 42km route, 4 transits/day 6-8 months. Process Exclusion JC2019-005 during pasteurisation \u2014 named perils only. Misappropriation exclusion JC2017/002.", "layers": [{"id": "ppaq-l1", "umr": "B1743MC2533330", "description": "CAD 75,000,000 any one location \u2014 Stock Throughput (primary)", "limitM": 75, "attachmentM": 0, "cedant": "La Financi\u00e8re Agricole du Quebec", "slipLeader": "Aviva Insurance Ltd obo Aviva Insurance Company of Canada (XIS 404403) \u2014 Richard Grant", "grossPremium": 220279, "brokerage": 27.5, "netPremium": 159702, "markets": [{"name": "Aviva / Aviva Canada", "syndicate": "XIS 404403", "written": 20.0, "signed": 20.0, "note": "Slip Leader. Line to stand."}, {"name": "Allied World", "syndicate": "2232 AWH", "written": 7.5, "signed": 6.4655, "note": "Michael Wilks"}, {"name": "Brit", "syndicate": "2987 BRT", "written": 17.5, "signed": 15.0862, "note": "Hannah Clark. Bureau Leader."}, {"name": "Antares", "syndicate": "1274 AUL", "written": 7.5, "signed": 6.4655, "note": "Andy Bridgwood"}, {"name": "AXIS", "syndicate": "1686 AXS", "written": 12.5, "signed": 10.7759, "note": "Joanne Reynolds"}, {"name": "Fidelis", "syndicate": "9584", "written": 17.5, "signed": 17.5, "note": "Lara Janse van Rensburg. Line to stand. Bureau Binder B1735ND0051724."}, {"name": "Tokio Marine HCC", "syndicate": "4141", "written": 10.0, "signed": 8.6207, "note": "Scott Matthews."}, {"name": "Everest", "syndicate": "2786 EVE", "written": 17.5, "signed": 15.0862, "note": "Leigh Meekings"}]}, {"id": "ppaq-l2", "umr": "B1743MC2597987", "description": "CAD 100,000,000 xs CAD 75,000,000 \u2014 Excess Stock Insurance", "limitM": 100, "attachmentM": 75, "cedant": "La Financi\u00e8re Agricole du Quebec", "slipLeader": "Talbot (TAL 1183) \u2014 Tom Lennard", "grossPremium": 135000, "brokerage": 27.5, "netPremium": 97875, "markets": [{"name": "Talbot", "syndicate": "1183 TAL", "written": 15.0, "signed": 15.0, "note": "Slip Leader. Line to stand."}, {"name": "CNA Hardy", "syndicate": "0382 HDU", "written": 12.5, "signed": 11.4131, "note": "Elliot Paul"}, {"name": "Westfield Specialty", "syndicate": "1200 WSM", "written": 12.5, "signed": 11.413, "note": "Safia Pal"}, {"name": "Fidelis", "syndicate": "9584", "written": 32.5, "signed": 32.5, "note": "Lara Janse van Rensburg. Line to stand."}, {"name": "Ark", "syndicate": "4020 ARK", "written": 7.5, "signed": 6.8478, "note": "Francine Rule"}, {"name": "IQUW", "syndicate": "1856 IQU", "written": 15.0, "signed": 13.6957, "note": "Imogen Southcott"}, {"name": "Lancashire", "syndicate": "9329 LRE", "written": 10.0, "signed": 9.1304, "note": "Richard Costain."}]}]}}], "emails": [], "slips": []}]};
-
 function entGetState(){
   const s = gs();
   if(!s.entities){
@@ -4327,6 +4299,37 @@ function renderEntities(){
 }
 
 function entOpenCard(insId){
+  // P19: Route to PG entity card first, fall back to localStorage
+  var asNum = Number(insId);
+  if (Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0) {
+    // Already a PG integer ID
+    openEntityCard(asNum);
+    return;
+  }
+  // localStorage slug ID — look up by name match in PG
+  var ent = entGetState();
+  var ins = ent.insureds ? ent.insureds.find(function(i){ return i.id === insId; }) : null;
+  if (ins) {
+    // Try to find matching PG entity by name
+    fetchEntityList({ type: 'insured', q: ins.name, limit: 5 }).then(function(matches) {
+      var exact = matches.find(function(m) { return m.name.toLowerCase().trim() === ins.name.toLowerCase().trim(); });
+      if (exact) {
+        openEntityCard(exact.id);
+      } else if (matches.length) {
+        openEntityCard(matches[0].id);
+      } else {
+        // No PG match — fall back to legacy
+        _legacyEntOpenCard(insId);
+      }
+    }).catch(function() {
+      _legacyEntOpenCard(insId);
+    });
+  } else {
+    handleMissingLocalInsured(insId, 'view');
+  }
+}
+
+function _legacyEntOpenCard(insId){
   const ent=entGetState();
   const ins=ent.insureds.find(i=>i.id===insId);
   if(!ins) { handleMissingLocalInsured(insId, 'view'); return; }
@@ -4837,17 +4840,42 @@ async function hiFile(files){
         });
       }
     }
-    // Populate insured select
+    // Populate insured select from PG entities
     var sel = g('hi-insured-select');
     if(sel){
       sel.innerHTML = '<option value="">— select insured —</option>';
-      var sorted = [...ent.insureds].sort(function(a,b){ return a.name.localeCompare(b.name); });
-      sorted.forEach(function(i){
-        var o = document.createElement('option');
-        o.value = i.id; o.textContent = i.name;
-        if(i.id === match.matched_id) o.selected = true;
-        sel.appendChild(o);
-      });
+      try {
+        var pgEntities = await fetchEntityList({ type: 'insured', limit: 500 });
+        pgEntities.sort(function(a,b){ return a.name.localeCompare(b.name); });
+        var pgMatchId = data.entity_match ? data.entity_match.id : null;
+        pgEntities.forEach(function(e){
+          var o = document.createElement('option');
+          o.value = e.id; o.textContent = e.name;
+          o.setAttribute('data-pg-id', e.id);
+          if(pgMatchId && e.id === pgMatchId) o.selected = true;
+          sel.appendChild(o);
+        });
+        // Also try to pre-select from localStorage match if no PG match
+        if(!pgMatchId && match.matched_id) {
+          var lsIns = ent.insureds ? ent.insureds.find(function(i){ return i.id === match.matched_id; }) : null;
+          if(lsIns) {
+            var lsMatch = pgEntities.find(function(e){ return e.name.toLowerCase().trim() === lsIns.name.toLowerCase().trim(); });
+            if(lsMatch) {
+              sel.value = String(lsMatch.id);
+              pgMatchId = lsMatch.id;
+            }
+          }
+        }
+      } catch(e) {
+        // Fallback to localStorage if PG fetch fails
+        var sorted = [...(ent.insureds||[])].sort(function(a,b){ return a.name.localeCompare(b.name); });
+        sorted.forEach(function(i){
+          var o = document.createElement('option');
+          o.value = i.id; o.textContent = i.name;
+          if(i.id === match.matched_id) o.selected = true;
+          sel.appendChild(o);
+        });
+      }
       hiPopulateEnquiry(match.matched_id||'');
     }
 
@@ -4947,7 +4975,7 @@ function hiSave(){
     }
   }
 
-  autoTickPostBind(ent, ins, note);
+  if(typeof autoTickPostBind === 'function') autoTickPostBind(ent, ins, note);
   entSave(ent);
 
   if(_hiNoteData && _hiNoteData.contacts && _hiNoteData.contacts.length){
@@ -6591,7 +6619,15 @@ async function batchStart(){
   const delay = parseInt(document.getElementById('batch-delay').value)||1000;
   const total = _batchFiles.length;
   const ent = entGetState();
-  const insuredList = ent.insureds.map(i=>({id:i.id,name:i.name}));
+  // P19: Fetch PG entities for insured list, localStorage fallback
+  var pgInsuredList = [];
+  try {
+    var pgEnts = await fetchEntityList({ type: 'insured', limit: 500 });
+    pgInsuredList = pgEnts.sort(function(a,b){ return a.name.localeCompare(b.name); });
+  } catch(e) {
+    pgInsuredList = (ent.insureds||[]).map(function(i){ return {id:i.id, name:i.name}; }).sort(function(a,b){ return a.name.localeCompare(b.name); });
+  }
+  const insuredList = pgInsuredList;
 
   for(let i=0; i<total; i++){
     if(_batchStop) break;
@@ -6628,7 +6664,7 @@ async function batchStart(){
         _batchStats.saved++;
       } else {
         // Queue for review
-        _batchQueue.push({file:file.name, note, match, emailData, existingRisks: existingRisks, insuredList:[...ent.insureds].sort((a,b)=>a.name.localeCompare(b.name))});
+        _batchQueue.push({file:file.name, note, match, emailData, existingRisks: existingRisks, insuredList: pgInsuredList});
         _batchStats.queue++;
       }
     } catch(e){
@@ -6713,9 +6749,9 @@ function renderReviewItem(){
   const note = item.note||{};
   const match = item.match||{};
   const confColour = {high:'var(--ok)',medium:'var(--warn)',low:'var(--err)'}[match.confidence]||'var(--text2)';
-  const currentEnt = entGetState();
-  const freshList = [...(currentEnt.insureds||[])].sort((a,b)=>a.name.localeCompare(b.name));
-  const insuredOpts = freshList.map(i=>`<option value="${i.id}" ${i.id===match.matched_id?'selected':''}>${i.name}</option>`).join('');
+  const freshList = item.insuredList || [];
+  const pgMatchId = match.matched_entity_id || null;
+  const insuredOpts = freshList.map(i=>`<option value="${i.id}" ${(pgMatchId && i.id===pgMatchId) || (!pgMatchId && i.id===match.matched_id)?'selected':''}>${escapeHtml(i.name)}</option>`).join('');
   const aiInsuredName = (item.note && item.note.insuredName) || '';
   const fileBaseName = item.file ? item.file.replace(/RE_|FW_|re_|fw_/gi,'').replace(/_/g,' ').replace(/\.(msg|eml|txt)$/i,'').split(' - ')[0].trim() : '';
   const suggestedInsuredName = aiInsuredName || match.matched_name || fileBaseName || '';
@@ -8488,4 +8524,455 @@ function importBookSpreadsheet() {
 function toggleBookMarket() {
   var el = document.getElementById('book-market-view');
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// =============================================================================
+// P9: Management Information Dashboard (Part 19)
+// =============================================================================
+
+var _miLoading = false;
+async function renderMIDashboard() {
+  if (_miLoading) return;
+  _miLoading = true;
+  var metricsEl = document.getElementById('mi-metrics');
+  var funnelEl = document.getElementById('mi-funnel');
+  var velocityEl = document.getElementById('mi-velocity');
+  var yearlyEl = document.getElementById('mi-yearly');
+  var renewalsEl = document.getElementById('mi-renewals');
+  var producersEl = document.getElementById('mi-producers');
+  var handlersEl = document.getElementById('mi-handlers');
+  var accuracyEl = document.getElementById('mi-accuracy');
+
+  if (metricsEl) metricsEl.innerHTML = '<div class="muted">Loading...</div>';
+
+  try {
+    var results = await Promise.all([
+      apiFetch('/mi/summary'),
+      apiFetch('/mi/renewals'),
+      apiFetch('/mi/producer-performance'),
+      apiFetch('/mi/corrections')
+    ]);
+    var summary = results[0];
+    var renewals = results[1];
+    var producers = results[2];
+    var corrections = results[3];
+
+    // ── Metrics tiles ──
+    var t = summary.totals || {};
+    var ts = summary.task_summary || {};
+    if (metricsEl) {
+      metricsEl.innerHTML = [
+        miMetricTile('Total risks', t.total_risks || 0, ''),
+        miMetricTile('Bound', t.bound_cnt || 0, ''),
+        miMetricTile('Pipeline', t.pipeline_cnt || 0, 'active'),
+        miMetricTile('Conversion', summary.conversion_rate + '%', 'bound / decided'),
+        miMetricTile('Est. commission', '\u00a3' + fmtK(t.total_est_comm), 'all risks'),
+        miMetricTile('Open tasks', ts.total_open || 0, (ts.overdue || 0) + ' overdue'),
+      ].join('');
+    }
+
+    // ── Funnel ──
+    if (funnelEl) {
+      var funnelOrder = ['submission','in_market','quoted','firm_order','bound','renewal_pending','closed_ntu'];
+      var funnelLabels = {submission:'Submission',in_market:'In market',quoted:'Quoted',firm_order:'Firm order',bound:'Bound',renewal_pending:'Renewal pending',closed_ntu:'NTU / Closed'};
+      var statusMap = {};
+      (summary.by_status || []).forEach(function(r) { statusMap[r.status] = r; });
+      var maxCnt = Math.max.apply(null, funnelOrder.map(function(s) { return (statusMap[s] || {}).cnt || 0; }).concat([1]));
+      funnelEl.innerHTML = funnelOrder.map(function(s) {
+        var row = statusMap[s] || { cnt: 0, est_comm: 0 };
+        var pct = Math.round((row.cnt / maxCnt) * 100);
+        var colour = s === 'bound' ? 'var(--ok)' : s === 'closed_ntu' ? 'var(--err)' : 'var(--accent, #003366)';
+        return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+          '<div style="width:100px;font-size:11px;color:var(--text2);text-align:right">' + (funnelLabels[s] || s) + '</div>' +
+          '<div style="flex:1;height:18px;background:var(--bg);border-radius:3px;overflow:hidden">' +
+            '<div style="height:100%;width:' + pct + '%;background:' + colour + ';border-radius:3px;min-width:2px"></div>' +
+          '</div>' +
+          '<div style="width:30px;font-size:11px;font-weight:600;text-align:right">' + row.cnt + '</div>' +
+          '<div style="width:60px;font-size:10px;color:var(--text2);text-align:right">\u00a3' + fmtK(row.est_comm || 0) + '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // ── Velocity ──
+    if (velocityEl) {
+      var velMap = {};
+      (summary.velocity || []).forEach(function(r) { velMap[r.status] = r.avg_days; });
+      var velOrder = ['submission','in_market','quoted','firm_order','bound'];
+      var velLabels = {submission:'Submission',in_market:'In market',quoted:'Quoted',firm_order:'Firm order',bound:'Bound'};
+      var maxDays = Math.max.apply(null, velOrder.map(function(s) { return velMap[s] || 0; }).concat([1]));
+      velocityEl.innerHTML = velOrder.map(function(s) {
+        var days = velMap[s] || 0;
+        var pct = Math.round((days / maxDays) * 100);
+        return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+          '<div style="width:100px;font-size:11px;color:var(--text2);text-align:right">' + (velLabels[s] || s) + '</div>' +
+          '<div style="flex:1;height:18px;background:var(--bg);border-radius:3px;overflow:hidden">' +
+            '<div style="height:100%;width:' + pct + '%;background:var(--warn);border-radius:3px;min-width:2px"></div>' +
+          '</div>' +
+          '<div style="width:50px;font-size:11px;font-weight:600;text-align:right">' + days + 'd</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // ── Yearly commission ──
+    if (yearlyEl) {
+      if (!summary.by_year || !summary.by_year.length) {
+        yearlyEl.innerHTML = '<div class="muted">No yearly data.</div>';
+      } else {
+        yearlyEl.innerHTML = '<table style="width:100%;font-size:12px"><tr><th style="text-align:left">Year</th><th style="text-align:right">Risks</th><th style="text-align:right">Gross premium</th><th style="text-align:right">Est. commission</th><th style="text-align:right">Locked</th></tr>' +
+          summary.by_year.map(function(r) {
+            return '<tr><td style="font-weight:600">' + (r.accounting_year || '—') + '</td>' +
+              '<td style="text-align:right">' + r.cnt + '</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(r.gross_prem || 0) + '</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(r.est_comm || 0) + '</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(r.locked_comm || 0) + '</td></tr>';
+          }).join('') + '</table>';
+      }
+    }
+
+    // ── Renewals ──
+    if (renewalsEl) {
+      var ret = renewals.retention || {};
+      var renHeader = '<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">' +
+        miMetricTile('Within 30d', renewals.within_30 || 0, '') +
+        miMetricTile('31-60d', renewals.within_60 || 0, '') +
+        miMetricTile('61-90d', renewals.within_90 || 0, '') +
+        miMetricTile('Revenue at risk', '\u00a3' + fmtK(renewals.revenue_at_risk_gbp || 0), '') +
+        miMetricTile('Retention', ret.retention_rate + '%', 'last 12m') +
+      '</div>';
+      if (!renewals.upcoming || !renewals.upcoming.length) {
+        renewalsEl.innerHTML = renHeader + '<div class="muted">No renewals due in next 90 days.</div>';
+      } else {
+        renewalsEl.innerHTML = renHeader +
+          '<table style="width:100%;font-size:11px"><tr><th style="text-align:left">Insured</th><th>Producer</th><th>Handler</th><th>Expiry</th><th style="text-align:right">Days</th><th style="text-align:right">Est. comm</th></tr>' +
+          renewals.upcoming.slice(0, 30).map(function(r) {
+            var urgent = r.days_to_expiry !== null && r.days_to_expiry <= 14;
+            return '<tr style="' + (urgent ? 'color:var(--err);font-weight:600' : '') + '">' +
+              '<td style="cursor:pointer" onclick="' + (r.id ? 'openBackendRiskCard(' + r.id + ')' : '') + '">' + escapeHtml(r.display_name || r.assured_name || '—') + '</td>' +
+              '<td>' + escapeHtml(r.producer_entity_name || r.producer || '—') + '</td>' +
+              '<td>' + escapeHtml(r.handler || '—') + '</td>' +
+              '<td>' + (r.expiry_date || '—') + '</td>' +
+              '<td style="text-align:right">' + (r.days_to_expiry != null ? r.days_to_expiry : '—') + '</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(r.estimated_gbp_commission || 0) + '</td></tr>';
+          }).join('') + '</table>';
+      }
+    }
+
+    // ── Producer performance ──
+    if (producersEl) {
+      if (!producers.producers || !producers.producers.length) {
+        producersEl.innerHTML = '<div class="muted">No producer data (risks must be linked to entities).</div>';
+      } else {
+        producersEl.innerHTML = '<table style="width:100%;font-size:11px"><tr><th style="text-align:left">Producer</th><th style="text-align:right">Insureds</th><th style="text-align:right">Risks</th><th style="text-align:right">Bound</th><th style="text-align:right">Pipeline</th><th style="text-align:right">Conversion</th><th style="text-align:right">Bound comm</th><th style="text-align:right">Total est.</th></tr>' +
+          producers.producers.map(function(p) {
+            return '<tr style="cursor:pointer" onclick="' + (p.producer_id ? 'openEntityCard(' + p.producer_id + ')' : '') + '">' +
+              '<td style="font-weight:600">' + escapeHtml(p.producer_name || '—') + '</td>' +
+              '<td style="text-align:right">' + (p.insured_count || 0) + '</td>' +
+              '<td style="text-align:right">' + (p.total_risks || 0) + '</td>' +
+              '<td style="text-align:right">' + (p.bound_cnt || 0) + '</td>' +
+              '<td style="text-align:right">' + (p.pipeline_cnt || 0) + '</td>' +
+              '<td style="text-align:right">' + (p.conversion_rate || 0) + '%</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(p.bound_comm || 0) + '</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(p.est_comm || 0) + '</td></tr>';
+          }).join('') +
+          (producers.unlinked_risks && producers.unlinked_risks.cnt > 0 ?
+            '<tr class="muted"><td>Unlinked risks</td><td></td><td style="text-align:right">' + producers.unlinked_risks.cnt + '</td><td colspan="5" style="text-align:right">\u00a3' + fmtK(producers.unlinked_risks.est_comm || 0) + '</td></tr>' : '') +
+          '</table>';
+      }
+    }
+
+    // ── Handler breakdown ──
+    if (handlersEl) {
+      if (!summary.by_handler || !summary.by_handler.length) {
+        handlersEl.innerHTML = '<div class="muted">No handler data.</div>';
+      } else {
+        handlersEl.innerHTML = '<table style="width:100%;font-size:11px"><tr><th style="text-align:left">Handler</th><th style="text-align:right">Risks</th><th style="text-align:right">Bound</th><th style="text-align:right">Est. commission</th></tr>' +
+          summary.by_handler.map(function(h) {
+            return '<tr><td style="font-weight:600">' + escapeHtml(h.handler) + '</td>' +
+              '<td style="text-align:right">' + h.cnt + '</td>' +
+              '<td style="text-align:right">' + (h.bound_cnt || 0) + '</td>' +
+              '<td style="text-align:right">\u00a3' + fmtK(h.est_comm || 0) + '</td></tr>';
+          }).join('') + '</table>';
+      }
+    }
+
+    // ── P7: AI extraction accuracy ──
+    if (accuracyEl) {
+      if (!corrections || !corrections.total_workflow_risks) {
+        accuracyEl.innerHTML = '<div class="muted">No workflow-created risks yet. Corrections are tracked automatically when you edit AI-extracted risk fields.</div>';
+      } else {
+        var accHeader = '<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">' +
+          miMetricTile('Workflow risks', corrections.total_workflow_risks, '') +
+          miMetricTile('Corrected', corrections.risks_with_corrections, corrections.correction_rate_pct + '% of risks') +
+          miMetricTile('Uncorrected', corrections.total_workflow_risks - corrections.risks_with_corrections, 'AI accepted as-is') +
+        '</div>';
+        var accFields = '';
+        if (corrections.accuracy_by_field && corrections.accuracy_by_field.length) {
+          accFields = '<table style="width:100%;font-size:11px;margin-bottom:12px"><tr><th style="text-align:left">Field</th><th style="text-align:right">Corrections</th><th style="text-align:right">Changed</th><th style="text-align:right">Added</th><th style="text-align:right">Accuracy</th></tr>' +
+            corrections.accuracy_by_field.map(function(f) {
+              var accColour = f.accuracy_pct >= 90 ? 'var(--ok)' : f.accuracy_pct >= 70 ? 'var(--warn)' : 'var(--err)';
+              return '<tr><td style="font-weight:500">' + f.field.replace(/_/g, ' ') + '</td>' +
+                '<td style="text-align:right">' + f.total_corrections + '</td>' +
+                '<td style="text-align:right">' + f.changed + '</td>' +
+                '<td style="text-align:right">' + f.added + '</td>' +
+                '<td style="text-align:right;color:' + accColour + ';font-weight:600">' + f.accuracy_pct + '%</td></tr>';
+            }).join('') + '</table>';
+        }
+        var recentHtml = '';
+        if (corrections.recent_corrections && corrections.recent_corrections.length) {
+          recentHtml = '<div style="font-size:11px;font-weight:500;color:var(--text2);margin-bottom:6px">Recent corrections</div>' +
+            '<table style="width:100%;font-size:11px"><tr><th style="text-align:left">Risk</th><th>Field</th><th>AI value</th><th>Corrected to</th></tr>' +
+            corrections.recent_corrections.slice(0, 15).map(function(c) {
+              return '<tr style="cursor:pointer" onclick="openBackendRiskCard(' + c.risk_id + ')">' +
+                '<td>' + escapeHtml(c.assured_name || '#' + c.risk_id) + '</td>' +
+                '<td>' + c.field.replace(/_/g, ' ') + '</td>' +
+                '<td style="color:var(--err);text-decoration:line-through;opacity:0.7">' + escapeHtml(c.ai_value != null ? String(c.ai_value) : '—') + '</td>' +
+                '<td style="color:var(--ok)">' + escapeHtml(String(c.current_value)) + '</td></tr>';
+            }).join('') + '</table>';
+        }
+        accuracyEl.innerHTML = accHeader + accFields + recentHtml;
+      }
+    }
+
+  } catch (e) {
+    if (metricsEl) metricsEl.innerHTML = '<div class="notice err">MI dashboard failed: ' + escapeHtml(e.message) + '</div>';
+  } finally {
+    _miLoading = false;
+  }
+}
+
+function miMetricTile(label, value, sub) {
+  return '<div style="background:var(--bg);border-radius:8px;padding:10px 14px;min-width:100px">' +
+    '<div style="font-size:11px;color:var(--text2)">' + label + '</div>' +
+    '<div style="font-size:20px;font-weight:600;margin-top:2px">' + value + '</div>' +
+    (sub ? '<div style="font-size:10px;color:var(--text3);margin-top:1px">' + sub + '</div>' : '') +
+  '</div>';
+}
+
+function fmtK(v) {
+  if (v == null || isNaN(v)) return '0';
+  v = Math.round(Number(v));
+  if (Math.abs(v) >= 1000000) return (v / 1000000).toFixed(1) + 'M';
+  if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1) + 'k';
+  return v.toLocaleString();
+}
+
+// =============================================================================
+// P7: Term Correction Learning — UI (Part 19)
+// =============================================================================
+
+async function loadCorrectionsBadge(riskId) {
+  var el = document.getElementById('corrections-badge-' + riskId);
+  if (!el) return;
+  try {
+    var data = await apiFetch('/risks/' + riskId + '/corrections');
+    if (!data.corrections || !data.corrections.length) {
+      el.innerHTML = '';
+      return;
+    }
+    var items = data.corrections.map(function(c) {
+      var icon = c.correction_type === 'added' ? '+' : '~';
+      var label = c.field.replace(/_/g, ' ');
+      return '<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">' +
+        '<div style="width:110px;color:var(--text2);font-weight:500">' + label + '</div>' +
+        '<div style="flex:1;display:flex;gap:6px;align-items:center">' +
+          (c.ai_value != null ? '<span style="text-decoration:line-through;color:var(--err);opacity:0.7">' + escapeHtml(String(c.ai_value)) + '</span>' : '<span class="muted">—</span>') +
+          '<span style="color:var(--text2)">→</span>' +
+          '<span style="color:var(--ok);font-weight:500">' + escapeHtml(String(c.current_value)) + '</span>' +
+        '</div>' +
+      '</div>';
+    });
+    el.innerHTML = '<div class="card" style="padding:12px 14px;margin-bottom:12px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+        '<div class="sh" style="font-size:12px;margin:0">AI corrections <span style="font-weight:400;color:var(--text3)">(' + data.count + ')</span></div>' +
+        '<div style="font-size:10px;color:var(--warn)">AI extracted → human corrected</div>' +
+      '</div>' +
+      items.join('') +
+    '</div>';
+  } catch(e) {
+    el.innerHTML = '';
+  }
+}
+
+// =============================================================================
+// P8: Market Intelligence — UI (Part 19)
+// =============================================================================
+
+function mi8Mode(m) {
+  ['scorecards','rules','interactions','add','addrule'].forEach(function(x) {
+    var el = document.getElementById('mi8-' + x + '-mode');
+    if (el) el.style.display = x === m ? 'block' : 'none';
+    var btn = document.getElementById('mi8-tab-' + x);
+    if (btn) btn.classList.toggle('active', x === m);
+  });
+  if (m === 'scorecards') renderMI8Scorecards();
+  if (m === 'rules') renderMI8Rules();
+  if (m === 'interactions') renderMI8Interactions();
+}
+
+async function renderMI8Scorecards() {
+  var el = document.getElementById('mi8-scorecard-list');
+  if (!el) return;
+  el.innerHTML = '<div class="muted">Loading...</div>';
+  var product = (document.getElementById('mi8-sc-product') || {}).value || '';
+  var territory = (document.getElementById('mi8-sc-territory') || {}).value || '';
+  var qs = new URLSearchParams();
+  if (product) qs.set('product', product);
+  if (territory) qs.set('territory', territory);
+  try {
+    var data = await apiFetch('/market/scorecards?' + qs.toString());
+    if (!data.scorecards || !data.scorecards.length) {
+      el.innerHTML = '<div class="muted">No market data yet. Log interactions to build scorecards.</div>';
+      return;
+    }
+    el.innerHTML = '<table style="width:100%;font-size:11px">' +
+      '<tr><th style="text-align:left">Underwriter</th><th style="text-align:right">Wrote</th><th style="text-align:right">Declined</th><th style="text-align:right">Ghosted</th><th style="text-align:right">Conversion</th><th style="text-align:right">Avg line</th><th style="text-align:right">Avg response</th><th style="text-align:right">Efficiency</th><th style="text-align:right">Favours</th><th>Products</th><th>Last</th></tr>' +
+      data.scorecards.map(function(s) {
+        var convColour = s.conversion_pct >= 60 ? 'var(--ok)' : s.conversion_pct >= 30 ? 'var(--warn)' : 'var(--err)';
+        var effColour = s.efficiency_pct != null ? (s.efficiency_pct >= 70 ? 'var(--ok)' : s.efficiency_pct >= 40 ? 'var(--warn)' : 'var(--err)') : '';
+        var favText = s.favour_balance > 0 ? '+' + s.favour_balance + ' (they owe)' : s.favour_balance < 0 ? s.favour_balance + ' (we owe)' : '—';
+        var favColour = s.favour_balance > 0 ? 'var(--ok)' : s.favour_balance < 0 ? 'var(--warn)' : '';
+        return '<tr>' +
+          '<td style="font-weight:600">' + escapeHtml(s.underwriter) + '</td>' +
+          '<td style="text-align:right">' + s.wrote_line + '</td>' +
+          '<td style="text-align:right">' + s.declined + '</td>' +
+          '<td style="text-align:right;color:var(--err)">' + s.ghosted + '</td>' +
+          '<td style="text-align:right;color:' + convColour + ';font-weight:600">' + s.conversion_pct + '%</td>' +
+          '<td style="text-align:right">' + (s.avg_line_pct != null ? s.avg_line_pct + '%' : '—') + '</td>' +
+          '<td style="text-align:right">' + (s.avg_response_hours != null ? s.avg_response_hours + 'h' : '—') + '</td>' +
+          '<td style="text-align:right;color:' + effColour + '">' + (s.efficiency_pct != null ? s.efficiency_pct + '%' : '—') + '</td>' +
+          '<td style="text-align:right;color:' + favColour + '">' + favText + '</td>' +
+          '<td style="font-size:10px">' + (s.products || []).join(', ') + '</td>' +
+          '<td style="font-size:10px">' + (s.last_interaction || '—') + '</td></tr>';
+      }).join('') + '</table>';
+  } catch(e) {
+    el.innerHTML = '<div class="notice err">Failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function renderMI8Rules() {
+  var el = document.getElementById('mi8-rules-list');
+  if (!el) return;
+  el.innerHTML = '<div class="muted">Loading...</div>';
+  try {
+    var data = await apiFetch('/market/rules');
+    if (!data.items || !data.items.length) {
+      el.innerHTML = '<div class="muted">No market rules defined. Add rules for things markets will never write.</div>';
+      return;
+    }
+    el.innerHTML = '<table style="width:100%;font-size:11px">' +
+      '<tr><th style="text-align:left">Underwriter</th><th>Syndicate</th><th>Exclusion</th><th>Product</th><th>Territory</th><th>Notes</th></tr>' +
+      data.items.map(function(r) {
+        return '<tr><td style="font-weight:600">' + escapeHtml(r.underwriter) + '</td>' +
+          '<td>' + escapeHtml(r.syndicate || '—') + '</td>' +
+          '<td style="color:var(--err);font-weight:500">' + escapeHtml(r.exclusion) + '</td>' +
+          '<td>' + escapeHtml(r.product || 'Any') + '</td>' +
+          '<td>' + escapeHtml(r.territory || 'Any') + '</td>' +
+          '<td style="font-size:10px;color:var(--text2)">' + escapeHtml(r.notes || '') + '</td></tr>';
+      }).join('') + '</table>';
+  } catch(e) {
+    el.innerHTML = '<div class="notice err">Failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function renderMI8Interactions() {
+  var el = document.getElementById('mi8-int-list');
+  if (!el) return;
+  el.innerHTML = '<div class="muted">Loading...</div>';
+  var uw = (document.getElementById('mi8-int-uw') || {}).value || '';
+  var itype = (document.getElementById('mi8-int-type') || {}).value || '';
+  var qs = new URLSearchParams();
+  if (uw) qs.set('underwriter', uw);
+  if (itype) qs.set('type', itype);
+  try {
+    var data = await apiFetch('/market/interactions?' + qs.toString());
+    if (!data.items || !data.items.length) {
+      el.innerHTML = '<div class="muted">No interactions logged yet.</div>';
+      return;
+    }
+    var typeBadge = function(t) {
+      var cols = {wrote_line:'var(--ok)',indicated:'var(--accent)',quoted:'var(--accent)',declined:'var(--err)',ghosted:'var(--err)',approached:'var(--text2)'};
+      return '<span style="font-size:10px;font-weight:600;color:' + (cols[t] || 'var(--text2)') + '">' + (t || '').replace('_',' ').toUpperCase() + '</span>';
+    };
+    el.innerHTML = data.items.map(function(i) {
+      return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;align-items:flex-start">' +
+        '<div style="flex:1">' +
+          '<div style="font-weight:500">' + escapeHtml(i.underwriter) + (i.contact_name ? ' <span style="font-weight:400;color:var(--text2)">(' + escapeHtml(i.contact_name) + ')</span>' : '') + '</div>' +
+          '<div class="muted" style="margin-top:2px">' +
+            (i.product || '—') + ' · ' + (i.territory || '—') +
+            (i.line_pct != null ? ' · ' + i.line_pct + '%' : '') +
+            (i.assured_name ? ' · ' + escapeHtml(i.assured_name) : '') +
+            ' · ' + (i.interaction_date || '—') +
+          '</div>' +
+          (i.decline_reason ? '<div style="color:var(--err);font-size:11px;margin-top:2px">' + escapeHtml(i.decline_reason) + '</div>' : '') +
+          (i.notes ? '<div style="color:var(--text2);font-size:11px;margin-top:2px">' + escapeHtml(i.notes) + '</div>' : '') +
+          (i.favour_tag ? '<div style="font-size:10px;margin-top:2px;color:var(--warn)">' + (i.favour_tag === 'favour_given' ? 'They did us a favour' : 'We fed them') + '</div>' : '') +
+        '</div>' +
+        '<div style="text-align:right">' + typeBadge(i.interaction_type) +
+          (i.decisiveness ? '<div style="font-size:10px;color:var(--text3);margin-top:2px">' + i.decisiveness.replace('_',' ') + '</div>' : '') +
+          (i.response_speed_hours != null ? '<div style="font-size:10px;color:var(--text3)">' + i.response_speed_hours + 'h</div>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div class="notice err">Failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function saveMI8Interaction() {
+  var uw = (document.getElementById('mi8-a-uw').value || '').trim();
+  if (!uw) { showNotice('Underwriter required', 'err'); return; }
+  var payload = {
+    underwriter: uw,
+    contact_name: (document.getElementById('mi8-a-contact').value || '').trim() || null,
+    syndicate: (document.getElementById('mi8-a-synd').value || '').trim() || null,
+    interaction_type: document.getElementById('mi8-a-type').value,
+    product: (document.getElementById('mi8-a-prod').value || '').trim() || null,
+    territory: (document.getElementById('mi8-a-terr').value || '').trim() || null,
+    line_pct: parseFloat(document.getElementById('mi8-a-line').value) || null,
+    interaction_date: document.getElementById('mi8-a-date').value || null,
+    decline_type: document.getElementById('mi8-a-dectype').value || null,
+    decisiveness: document.getElementById('mi8-a-decisive').value || null,
+    favour_tag: document.getElementById('mi8-a-favour').value || null,
+    response_speed_hours: parseFloat(document.getElementById('mi8-a-speed').value) || null,
+    notes: (document.getElementById('mi8-a-notes').value || '').trim() || null,
+    decline_reason: (document.getElementById('mi8-a-notes').value || '').trim() || null,
+    risk_id: parseInt(document.getElementById('mi8-a-riskid').value) || null,
+    source: 'manual'
+  };
+  try {
+    await apiFetch('/market/interactions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    showNotice('Interaction logged for ' + uw, 'ok');
+    ['mi8-a-uw','mi8-a-contact','mi8-a-synd','mi8-a-prod','mi8-a-terr','mi8-a-line','mi8-a-date','mi8-a-speed','mi8-a-notes','mi8-a-riskid'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) el.value = '';
+    });
+  } catch(e) { showNotice('Save failed: ' + e.message, 'err'); }
+}
+
+async function saveMI8Rule() {
+  var uw = (document.getElementById('mi8-r-uw').value || '').trim();
+  var excl = (document.getElementById('mi8-r-excl').value || '').trim();
+  if (!uw || !excl) { showNotice('Underwriter and exclusion required', 'err'); return; }
+  try {
+    await apiFetch('/market/rules', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        underwriter: uw,
+        syndicate: (document.getElementById('mi8-r-synd').value || '').trim() || null,
+        exclusion: excl,
+        product: (document.getElementById('mi8-r-prod').value || '').trim() || null,
+        territory: (document.getElementById('mi8-r-terr').value || '').trim() || null,
+        notes: (document.getElementById('mi8-r-notes').value || '').trim() || null,
+      })
+    });
+    showNotice('Rule added: ' + uw + ' — ' + excl, 'ok');
+    ['mi8-r-uw','mi8-r-synd','mi8-r-excl','mi8-r-prod','mi8-r-terr','mi8-r-notes'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) el.value = '';
+    });
+    mi8Mode('rules');
+  } catch(e) { showNotice('Save failed: ' + e.message, 'err'); }
 }

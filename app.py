@@ -456,11 +456,59 @@ def ensure_schema() -> None:
                     );
                 END $$;
             """)
+            # P8: Market intelligence tables
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS market_interactions (
+                    id SERIAL PRIMARY KEY,
+                    risk_id INTEGER REFERENCES risks(id) ON DELETE SET NULL,
+                    entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+                    underwriter TEXT NOT NULL,
+                    contact_name TEXT,
+                    syndicate TEXT,
+                    interaction_type TEXT NOT NULL DEFAULT 'approached',
+                    product TEXT,
+                    territory TEXT,
+                    line_pct NUMERIC(8,4),
+                    premium_indication NUMERIC(18,2),
+                    rate_indication NUMERIC(12,8),
+                    conditions JSONB DEFAULT '[]',
+                    decline_reason TEXT,
+                    decline_type TEXT,
+                    appetite_signals JSONB DEFAULT '{}',
+                    response_speed_hours NUMERIC(10,2),
+                    decisiveness TEXT,
+                    favour_tag TEXT,
+                    source TEXT DEFAULT 'manual',
+                    source_email_id INTEGER REFERENCES ingested_emails(id) ON DELETE SET NULL,
+                    interaction_date DATE,
+                    notes TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS market_rules (
+                    id SERIAL PRIMARY KEY,
+                    underwriter TEXT NOT NULL,
+                    syndicate TEXT,
+                    rule_type TEXT NOT NULL DEFAULT 'hard_decline',
+                    product TEXT,
+                    territory TEXT,
+                    exclusion TEXT NOT NULL,
+                    source_interaction_id INTEGER REFERENCES market_interactions(id) ON DELETE SET NULL,
+                    notes TEXT,
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
     logger.info("Migrations ensured")
     # Step 3: indexes on new columns (separate transaction, after columns exist)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_risks_entity_id ON risks(entity_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_mi_underwriter ON market_interactions(LOWER(underwriter));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_mi_risk ON market_interactions(risk_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_mi_type ON market_interactions(interaction_type);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_mr_underwriter ON market_rules(LOWER(underwriter));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_mr_active ON market_rules(active);")
     logger.info("Database schema fully ensured")
 
 
@@ -2610,6 +2658,717 @@ def cleanup_risks():
             log_event(conn, "entity", 0, "bulk_cleanup", {"deleted": deleted, "criteria": payload}, user_id)
 
     return jsonify({"ok": True, "deleted": deleted, "risk_ids": risk_ids})
+
+
+# =============================================================================
+# P8: Market Intelligence — interactions, rules, scorecards
+# =============================================================================
+
+INTERACTION_TYPES = ("approached", "indicated", "quoted", "declined", "wrote_line", "scratched", "ghosted")
+DECLINE_TYPES = ("hard_rule", "soft_pass", "no_response")
+DECISIVENESS_TYPES = ("decisive", "slow_but_clear", "non_committal", "ghosted")
+FAVOUR_TYPES = ("favour_given", "favour_owed", None)
+
+
+def serialise_interaction(row: Dict[str, Any]) -> Dict[str, Any]:
+    d = {k: row.get(k) for k in (
+        "id", "risk_id", "entity_id", "underwriter", "contact_name", "syndicate",
+        "interaction_type", "product", "territory", "decline_reason", "decline_type",
+        "decisiveness", "favour_tag", "source", "notes",
+    )}
+    d["line_pct"] = float(row["line_pct"]) if row.get("line_pct") is not None else None
+    d["premium_indication"] = float(row["premium_indication"]) if row.get("premium_indication") is not None else None
+    d["rate_indication"] = float(row["rate_indication"]) if row.get("rate_indication") is not None else None
+    d["response_speed_hours"] = float(row["response_speed_hours"]) if row.get("response_speed_hours") is not None else None
+    d["conditions"] = row.get("conditions") or []
+    d["appetite_signals"] = row.get("appetite_signals") or {}
+    d["interaction_date"] = str(row["interaction_date"]) if row.get("interaction_date") else None
+    d["created_at"] = iso(row.get("created_at"))
+    d["assured_name"] = row.get("assured_name")
+    return d
+
+
+@app.get("/market/interactions")
+@require_admin
+@rate_limited("default_read")
+def list_market_interactions():
+    underwriter = request.args.get("underwriter", "").strip()
+    risk_id = parse_int_safe(request.args.get("risk_id"))
+    product = request.args.get("product", "").strip()
+    territory = request.args.get("territory", "").strip()
+    interaction_type = request.args.get("type", "").strip()
+    limit = min(int(request.args.get("limit") or 200), 500)
+
+    where, params = ["1=1"], []
+    if underwriter:
+        where.append("LOWER(mi.underwriter) LIKE %s")
+        params.append(f"%{underwriter.lower()}%")
+    if risk_id is not None:
+        where.append("mi.risk_id = %s")
+        params.append(risk_id)
+    if product:
+        where.append("LOWER(mi.product) LIKE %s")
+        params.append(f"%{product.lower()}%")
+    if territory:
+        where.append("LOWER(mi.territory) LIKE %s")
+        params.append(f"%{territory.lower()}%")
+    if interaction_type:
+        where.append("mi.interaction_type = %s")
+        params.append(interaction_type)
+
+    sql = f"""
+        SELECT mi.*, r.assured_name
+        FROM market_interactions mi
+        LEFT JOIN risks r ON r.id = mi.risk_id
+        WHERE {" AND ".join(where)}
+        ORDER BY mi.interaction_date DESC NULLS LAST, mi.id DESC
+        LIMIT %s
+    """
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, params)
+            items = [serialise_interaction(dict(r)) for r in cur.fetchall()]
+    return jsonify({"items": items, "total": len(items)})
+
+
+@app.post("/market/interactions")
+@require_admin
+@rate_limited("default_write")
+def create_market_interaction():
+    payload = request.get_json(force=True, silent=True) or {}
+    underwriter = (payload.get("underwriter") or "").strip()
+    if not underwriter:
+        return jsonify({"error": "underwriter is required"}), 400
+    interaction_type = (payload.get("interaction_type") or "approached").strip()
+    user_id = get_user_id_from_request()
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                INSERT INTO market_interactions
+                    (risk_id, entity_id, underwriter, contact_name, syndicate,
+                     interaction_type, product, territory,
+                     line_pct, premium_indication, rate_indication,
+                     conditions, decline_reason, decline_type,
+                     appetite_signals, response_speed_hours, decisiveness,
+                     favour_tag, source, source_email_id, interaction_date, notes)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING *
+            """, (
+                parse_int_safe(payload.get("risk_id")),
+                parse_int_safe(payload.get("entity_id")),
+                underwriter,
+                payload.get("contact_name"),
+                payload.get("syndicate"),
+                interaction_type,
+                payload.get("product"),
+                payload.get("territory"),
+                parse_decimal(payload.get("line_pct")),
+                parse_decimal(payload.get("premium_indication")),
+                parse_decimal(payload.get("rate_indication")),
+                json.dumps(payload.get("conditions") or []),
+                payload.get("decline_reason"),
+                payload.get("decline_type"),
+                json.dumps(payload.get("appetite_signals") or {}),
+                parse_decimal(payload.get("response_speed_hours")),
+                payload.get("decisiveness"),
+                payload.get("favour_tag"),
+                payload.get("source", "manual"),
+                parse_int_safe(payload.get("source_email_id")),
+                payload.get("interaction_date"),
+                payload.get("notes"),
+            ))
+            row = dict(cur.fetchone())
+            row["assured_name"] = None
+            log_event(conn, "market", row["id"], "interaction_created", {
+                "underwriter": underwriter, "type": interaction_type
+            }, user_id)
+
+            # Auto-create market rule if hard_decline
+            if payload.get("decline_type") == "hard_rule" and payload.get("decline_reason"):
+                cur.execute("""
+                    INSERT INTO market_rules (underwriter, syndicate, rule_type, product, territory, exclusion, source_interaction_id, notes)
+                    VALUES (%s, %s, 'hard_decline', %s, %s, %s, %s, %s)
+                """, (
+                    underwriter, payload.get("syndicate"),
+                    payload.get("product"), payload.get("territory"),
+                    payload.get("decline_reason"), row["id"],
+                    f"Auto-created from decline on {payload.get('interaction_date', 'unknown date')}",
+                ))
+
+    return jsonify(serialise_interaction(row)), 201
+
+
+@app.get("/market/rules")
+@require_admin
+@rate_limited("default_read")
+def list_market_rules():
+    underwriter = request.args.get("underwriter", "").strip()
+    product = request.args.get("product", "").strip()
+    where, params = ["active = TRUE"], []
+    if underwriter:
+        where.append("LOWER(underwriter) LIKE %s")
+        params.append(f"%{underwriter.lower()}%")
+    if product:
+        where.append("(LOWER(product) LIKE %s OR product IS NULL)")
+        params.append(f"%{product.lower()}%")
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(f"""
+                SELECT * FROM market_rules
+                WHERE {" AND ".join(where)}
+                ORDER BY underwriter, created_at DESC
+            """, params)
+            items = [dict(r) for r in cur.fetchall()]
+            for item in items:
+                item["created_at"] = iso(item.get("created_at"))
+    return jsonify({"items": items, "total": len(items)})
+
+
+@app.post("/market/rules")
+@require_admin
+@rate_limited("default_write")
+def create_market_rule():
+    payload = request.get_json(force=True, silent=True) or {}
+    underwriter = (payload.get("underwriter") or "").strip()
+    exclusion = (payload.get("exclusion") or "").strip()
+    if not underwriter or not exclusion:
+        return jsonify({"error": "underwriter and exclusion are required"}), 400
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                INSERT INTO market_rules (underwriter, syndicate, rule_type, product, territory, exclusion, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (
+                underwriter, payload.get("syndicate"),
+                payload.get("rule_type", "hard_decline"),
+                payload.get("product"), payload.get("territory"),
+                exclusion, payload.get("notes"),
+            ))
+            row = dict(cur.fetchone())
+            row["created_at"] = iso(row.get("created_at"))
+    return jsonify(row), 201
+
+
+@app.get("/market/check-rules")
+@require_admin
+@rate_limited("default_read")
+def check_market_rules():
+    """Given a product + territory, return any underwriters with hard rules that would exclude them."""
+    product = request.args.get("product", "").strip().lower()
+    territory = request.args.get("territory", "").strip().lower()
+    if not product and not territory:
+        return jsonify({"warnings": [], "message": "Provide product or territory to check"})
+
+    where = ["active = TRUE"]
+    params = []
+    if product:
+        where.append("(LOWER(product) LIKE %s OR product IS NULL OR product = '')")
+        params.append(f"%{product}%")
+    if territory:
+        where.append("(LOWER(territory) LIKE %s OR territory IS NULL OR territory = '')")
+        params.append(f"%{territory}%")
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(f"""
+                SELECT * FROM market_rules WHERE {" AND ".join(where)}
+                ORDER BY underwriter
+            """, params)
+            rules = [dict(r) for r in cur.fetchall()]
+            for r in rules:
+                r["created_at"] = iso(r.get("created_at"))
+    return jsonify({"warnings": rules, "count": len(rules)})
+
+
+@app.get("/market/scorecards")
+@require_admin
+@rate_limited("default_read")
+def market_scorecards():
+    """Aggregate underwriter scorecards from all interactions."""
+    product = request.args.get("product", "").strip()
+    territory = request.args.get("territory", "").strip()
+
+    where, params = [], []
+    if product:
+        where.append("LOWER(product) LIKE %s")
+        params.append(f"%{product.lower()}%")
+    if territory:
+        where.append("LOWER(territory) LIKE %s")
+        params.append(f"%{territory.lower()}%")
+
+    where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(f"""
+                SELECT
+                    underwriter,
+                    COUNT(*) AS total_interactions,
+                    SUM(CASE WHEN interaction_type = 'approached' THEN 1 ELSE 0 END) AS approached,
+                    SUM(CASE WHEN interaction_type = 'indicated' THEN 1 ELSE 0 END) AS indicated,
+                    SUM(CASE WHEN interaction_type = 'quoted' THEN 1 ELSE 0 END) AS quoted,
+                    SUM(CASE WHEN interaction_type = 'wrote_line' THEN 1 ELSE 0 END) AS wrote_line,
+                    SUM(CASE WHEN interaction_type = 'declined' THEN 1 ELSE 0 END) AS declined,
+                    SUM(CASE WHEN interaction_type = 'ghosted' THEN 1 ELSE 0 END) AS ghosted,
+                    AVG(line_pct) FILTER (WHERE line_pct IS NOT NULL) AS avg_line_pct,
+                    MAX(line_pct) AS max_line_pct,
+                    AVG(response_speed_hours) FILTER (WHERE response_speed_hours IS NOT NULL) AS avg_response_hours,
+                    MAX(interaction_date) AS last_interaction,
+                    ARRAY_AGG(DISTINCT product) FILTER (WHERE product IS NOT NULL) AS products,
+                    ARRAY_AGG(DISTINCT territory) FILTER (WHERE territory IS NOT NULL) AS territories,
+                    SUM(CASE WHEN favour_tag = 'favour_given' THEN 1 ELSE 0 END) AS favours_given,
+                    SUM(CASE WHEN favour_tag = 'favour_owed' THEN 1 ELSE 0 END) AS favours_owed,
+                    SUM(CASE WHEN decisiveness = 'decisive' THEN 1 ELSE 0 END) AS decisive_cnt,
+                    SUM(CASE WHEN decisiveness = 'ghosted' THEN 1 ELSE 0 END) AS ghost_cnt,
+                    SUM(CASE WHEN decisiveness = 'non_committal' THEN 1 ELSE 0 END) AS noncommittal_cnt
+                FROM market_interactions
+                {where_clause}
+                GROUP BY underwriter
+                ORDER BY SUM(CASE WHEN interaction_type = 'wrote_line' THEN 1 ELSE 0 END) DESC, COUNT(*) DESC
+            """, params)
+            rows = [dict(r) for r in cur.fetchall()]
+
+    scorecards = []
+    for row in rows:
+        approached = int(row.get("approached") or 0) + int(row.get("indicated") or 0) + int(row.get("quoted") or 0) + int(row.get("wrote_line") or 0) + int(row.get("declined") or 0) + int(row.get("ghosted") or 0)
+        wrote = int(row.get("wrote_line") or 0)
+        declined = int(row.get("declined") or 0) + int(row.get("ghosted") or 0)
+        decided = wrote + declined
+        conversion = round(wrote / decided * 100, 1) if decided > 0 else 0
+
+        # Efficiency score: decisive responses / total (higher = more efficient to work with)
+        decisive = int(row.get("decisive_cnt") or 0)
+        ghost = int(row.get("ghost_cnt") or 0)
+        noncommittal = int(row.get("noncommittal_cnt") or 0)
+        total_rated = decisive + ghost + noncommittal
+        efficiency = round(decisive / total_rated * 100, 1) if total_rated > 0 else None
+
+        # Favour balance: positive = they owe us, negative = we owe them
+        favour_balance = int(row.get("favours_owed") or 0) - int(row.get("favours_given") or 0)
+
+        scorecards.append({
+            "underwriter": row["underwriter"],
+            "total_interactions": int(row["total_interactions"]),
+            "wrote_line": wrote,
+            "declined": int(row.get("declined") or 0),
+            "ghosted": int(row.get("ghosted") or 0),
+            "conversion_pct": conversion,
+            "avg_line_pct": round(float(row["avg_line_pct"]), 2) if row.get("avg_line_pct") else None,
+            "max_line_pct": float(row["max_line_pct"]) if row.get("max_line_pct") else None,
+            "avg_response_hours": round(float(row["avg_response_hours"]), 1) if row.get("avg_response_hours") else None,
+            "efficiency_pct": efficiency,
+            "favour_balance": favour_balance,
+            "favours_given": int(row.get("favours_given") or 0),
+            "favours_owed": int(row.get("favours_owed") or 0),
+            "products": row.get("products") or [],
+            "territories": row.get("territories") or [],
+            "last_interaction": str(row["last_interaction"]) if row.get("last_interaction") else None,
+        })
+
+    return jsonify({"scorecards": scorecards, "total": len(scorecards)})
+
+
+# =============================================================================
+# P7: Term Correction Learning — diff ai_extracted vs live risk fields
+# =============================================================================
+
+# Fields where ai_extracted maps to a risk column
+CORRECTION_FIELD_MAP = {
+    "assured_name": "assured_name",
+    "display_name": "display_name",
+    "producer": "producer",
+    "product": "product",
+    "region": "region",
+    "handler": "handler",
+    "currency": "currency",
+    "estimated_premium": "gross_premium",
+}
+
+
+def _normalise_for_diff(val: Any) -> Optional[str]:
+    """Normalise a value for comparison: strip, lowercase, None for empty."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "" or s.lower() in ("none", "null", "0", "unknown", "n/a"):
+        return None
+    return s
+
+
+def compute_risk_corrections(risk_row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Compare ai_extracted fields against live risk columns. Returns list of corrections."""
+    ai = risk_row.get("ai_extracted") or {}
+    if isinstance(ai, str):
+        try:
+            ai = json.loads(ai)
+        except Exception:
+            return []
+    if not ai or not ai.get("source_workflow"):
+        return []
+
+    corrections = []
+    for ai_field, risk_col in CORRECTION_FIELD_MAP.items():
+        ai_val = _normalise_for_diff(ai.get(ai_field))
+        risk_val = _normalise_for_diff(risk_row.get(risk_col))
+        if ai_val is None and risk_val is None:
+            continue
+        if ai_val is None and risk_val is not None:
+            corrections.append({
+                "field": ai_field,
+                "risk_column": risk_col,
+                "ai_value": None,
+                "current_value": str(risk_row.get(risk_col)),
+                "correction_type": "added",
+            })
+        elif ai_val is not None and risk_val is not None and ai_val.lower() != risk_val.lower():
+            corrections.append({
+                "field": ai_field,
+                "risk_column": risk_col,
+                "ai_value": str(ai.get(ai_field)),
+                "current_value": str(risk_row.get(risk_col)),
+                "correction_type": "changed",
+            })
+    # Also check status (AI uses display labels, risk uses canonical)
+    ai_status = ai.get("status")
+    if ai_status:
+        ai_canonical = canonical_risk_status(ai_status)
+        risk_canonical = canonical_risk_status(risk_row.get("status"))
+        if ai_canonical != risk_canonical and risk_canonical != "submission":
+            corrections.append({
+                "field": "status",
+                "risk_column": "status",
+                "ai_value": ai_status,
+                "current_value": display_risk_status(risk_row.get("status")),
+                "correction_type": "changed",
+            })
+    return corrections
+
+
+@app.get("/risks/<int:risk_id>/corrections")
+@require_admin
+@rate_limited("default_read")
+def get_risk_corrections(risk_id: int):
+    """Return AI vs human corrections for a single risk."""
+    with get_conn() as conn:
+        row = get_risk_row(conn, risk_id)
+        if not row:
+            return jsonify({"error": "Risk not found"}), 404
+    corrections = compute_risk_corrections(row)
+    return jsonify({"risk_id": risk_id, "corrections": corrections, "count": len(corrections)})
+
+
+@app.get("/mi/corrections")
+@require_admin
+@rate_limited("default_read")
+def mi_corrections_aggregate():
+    """Aggregate correction stats across all workflow-created risks."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            # Get all risks with ai_extracted that came from workflow
+            cur.execute("""
+                SELECT * FROM risks
+                WHERE merged_into_risk_id IS NULL
+                  AND ai_extracted IS NOT NULL
+                  AND ai_extracted::text LIKE '%%source_workflow%%'
+            """)
+            rows = [dict(r) for r in cur.fetchall()]
+
+    total_risks = len(rows)
+    risks_with_corrections = 0
+    field_stats: Dict[str, Dict[str, int]] = {}  # field -> {changed, added, total}
+    all_corrections = []
+
+    for row in rows:
+        ai = row.get("ai_extracted") or {}
+        if isinstance(ai, str):
+            try:
+                ai = json.loads(ai)
+            except Exception:
+                continue
+        corrections = compute_risk_corrections(row)
+        if corrections:
+            risks_with_corrections += 1
+        for c in corrections:
+            f = c["field"]
+            if f not in field_stats:
+                field_stats[f] = {"changed": 0, "added": 0, "total": 0}
+            field_stats[f][c["correction_type"]] = field_stats[f].get(c["correction_type"], 0) + 1
+            field_stats[f]["total"] += 1
+            all_corrections.append({
+                "risk_id": row["id"],
+                "assured_name": row.get("assured_name"),
+                "field": c["field"],
+                "ai_value": c["ai_value"],
+                "current_value": c["current_value"],
+                "correction_type": c["correction_type"],
+            })
+
+    # Sort field_stats by total corrections desc
+    sorted_fields = sorted(field_stats.items(), key=lambda x: x[1]["total"], reverse=True)
+    accuracy_by_field = []
+    for field, stats in sorted_fields:
+        accuracy_by_field.append({
+            "field": field,
+            "total_corrections": stats["total"],
+            "changed": stats.get("changed", 0),
+            "added": stats.get("added", 0),
+            "accuracy_pct": round((1 - stats["total"] / total_risks) * 100, 1) if total_risks > 0 else 100,
+        })
+
+    return jsonify({
+        "total_workflow_risks": total_risks,
+        "risks_with_corrections": risks_with_corrections,
+        "correction_rate_pct": round(risks_with_corrections / total_risks * 100, 1) if total_risks > 0 else 0,
+        "accuracy_by_field": accuracy_by_field,
+        "recent_corrections": all_corrections[:50],
+    })
+
+
+# =============================================================================
+# P9: Management Information (MI) Dashboards — read-only endpoints
+# =============================================================================
+
+@app.get("/mi/summary")
+@require_admin
+@rate_limited("default_read")
+def mi_summary():
+    """Pipeline summary: status breakdown, conversion rates, commission by year, handler breakdown."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            # Status breakdown (exclude merged)
+            cur.execute("""
+                SELECT status, COUNT(*) AS cnt,
+                       COALESCE(SUM(estimated_gbp_commission), 0) AS est_comm,
+                       COALESCE(SUM(locked_gbp_commission), 0) AS locked_comm
+                FROM risks
+                WHERE merged_into_risk_id IS NULL
+                GROUP BY status
+                ORDER BY status
+            """)
+            status_rows = [dict(r) for r in cur.fetchall()]
+
+            # Commission by accounting year
+            cur.execute("""
+                SELECT accounting_year, COUNT(*) AS cnt,
+                       COALESCE(SUM(estimated_gbp_commission), 0) AS est_comm,
+                       COALESCE(SUM(locked_gbp_commission), 0) AS locked_comm,
+                       COALESCE(SUM(gross_premium), 0) AS gross_prem
+                FROM risks
+                WHERE merged_into_risk_id IS NULL AND accounting_year IS NOT NULL
+                GROUP BY accounting_year
+                ORDER BY accounting_year DESC
+            """)
+            year_rows = [dict(r) for r in cur.fetchall()]
+
+            # Handler breakdown
+            cur.execute("""
+                SELECT COALESCE(handler, 'Unassigned') AS handler, COUNT(*) AS cnt,
+                       SUM(CASE WHEN status = 'bound' THEN 1 ELSE 0 END) AS bound_cnt,
+                       COALESCE(SUM(estimated_gbp_commission), 0) AS est_comm
+                FROM risks
+                WHERE merged_into_risk_id IS NULL
+                GROUP BY COALESCE(handler, 'Unassigned')
+                ORDER BY est_comm DESC
+            """)
+            handler_rows = [dict(r) for r in cur.fetchall()]
+
+            # Pipeline velocity: avg days from created_at to updated_at by current status
+            cur.execute("""
+                SELECT status,
+                       ROUND(AVG(EXTRACT(EPOCH FROM (COALESCE(updated_at, NOW()) - created_at)) / 86400)::numeric, 1) AS avg_days
+                FROM risks
+                WHERE merged_into_risk_id IS NULL AND created_at IS NOT NULL
+                GROUP BY status
+            """)
+            velocity_rows = [dict(r) for r in cur.fetchall()]
+
+            # Totals
+            cur.execute("""
+                SELECT COUNT(*) AS total_risks,
+                       SUM(CASE WHEN status = 'bound' THEN 1 ELSE 0 END) AS bound_cnt,
+                       SUM(CASE WHEN status IN ('submission','in_market','quoted','firm_order') THEN 1 ELSE 0 END) AS pipeline_cnt,
+                       SUM(CASE WHEN status = 'closed_ntu' THEN 1 ELSE 0 END) AS ntu_cnt,
+                       COALESCE(SUM(estimated_gbp_commission), 0) AS total_est_comm,
+                       COALESCE(SUM(locked_gbp_commission), 0) AS total_locked_comm,
+                       COUNT(DISTINCT entity_id) AS linked_entities
+                FROM risks
+                WHERE merged_into_risk_id IS NULL
+            """)
+            totals = dict(cur.fetchone())
+
+            # Open tasks summary
+            cur.execute("""
+                SELECT COUNT(*) AS total_open,
+                       SUM(CASE WHEN priority IN ('high','urgent') THEN 1 ELSE 0 END) AS high_priority,
+                       SUM(CASE WHEN due_date < CURRENT_DATE THEN 1 ELSE 0 END) AS overdue
+                FROM risk_tasks
+                WHERE status != 'done'
+            """)
+            task_summary = dict(cur.fetchone())
+
+    # Conversion rate
+    bound = int(totals.get("bound_cnt") or 0)
+    pipeline = int(totals.get("pipeline_cnt") or 0)
+    ntu = int(totals.get("ntu_cnt") or 0)
+    total_decided = bound + ntu
+    conversion_rate = round(bound / total_decided * 100, 1) if total_decided > 0 else 0
+
+    # Serialise decimals
+    for row in status_rows + year_rows + handler_rows:
+        for k in ("est_comm", "locked_comm", "gross_prem"):
+            if k in row and row[k] is not None:
+                row[k] = float(row[k])
+    for row in velocity_rows:
+        if row.get("avg_days") is not None:
+            row["avg_days"] = float(row["avg_days"])
+    for k in ("total_est_comm", "total_locked_comm"):
+        if totals.get(k) is not None:
+            totals[k] = float(totals[k])
+
+    return jsonify({
+        "by_status": status_rows,
+        "by_year": year_rows,
+        "by_handler": handler_rows,
+        "velocity": velocity_rows,
+        "totals": totals,
+        "conversion_rate": conversion_rate,
+        "task_summary": task_summary,
+    })
+
+
+@app.get("/mi/renewals")
+@require_admin
+@rate_limited("default_read")
+def mi_renewals():
+    """Upcoming renewals within 30/60/90 days. Retention rate. Revenue at risk."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            # Upcoming renewals (bound/renewal_pending with expiry_date in next 90 days)
+            cur.execute("""
+                SELECT r.id, r.assured_name, r.display_name, r.producer, r.handler, r.product,
+                       r.status, r.expiry_date, r.inception_date, r.currency, r.gross_premium,
+                       r.estimated_gbp_commission, r.locked_gbp_commission,
+                       e.name AS entity_name, pe.name AS producer_entity_name,
+                       EXTRACT(DAY FROM (r.expiry_date - CURRENT_DATE)) AS days_to_expiry
+                FROM risks r
+                LEFT JOIN entities e ON e.id = r.entity_id
+                LEFT JOIN entities pe ON pe.id = e.parent_id
+                WHERE r.merged_into_risk_id IS NULL
+                  AND r.expiry_date IS NOT NULL
+                  AND r.expiry_date >= CURRENT_DATE
+                  AND r.expiry_date <= CURRENT_DATE + INTERVAL '90 days'
+                  AND r.status IN ('bound', 'renewal_pending', 'expired_review')
+                ORDER BY r.expiry_date ASC
+            """)
+            upcoming = []
+            for row in cur.fetchall():
+                d = dict(row)
+                d["days_to_expiry"] = int(d["days_to_expiry"]) if d["days_to_expiry"] is not None else None
+                if d.get("expiry_date"):
+                    d["expiry_date"] = str(d["expiry_date"])
+                if d.get("inception_date"):
+                    d["inception_date"] = str(d["inception_date"])
+                for k in ("gross_premium", "estimated_gbp_commission", "locked_gbp_commission"):
+                    if d.get(k) is not None:
+                        d[k] = float(d[k])
+                upcoming.append(d)
+
+            # Retention stats (risks that expired in last 12 months)
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS total_expired,
+                    SUM(CASE WHEN status = 'bound' THEN 1 ELSE 0 END) AS renewed,
+                    SUM(CASE WHEN status IN ('closed_ntu','expired_review') THEN 1 ELSE 0 END) AS lost,
+                    COALESCE(SUM(CASE WHEN status = 'bound' THEN estimated_gbp_commission ELSE 0 END), 0) AS renewed_comm,
+                    COALESCE(SUM(CASE WHEN status IN ('closed_ntu','expired_review') THEN estimated_gbp_commission ELSE 0 END), 0) AS lost_comm
+                FROM risks
+                WHERE merged_into_risk_id IS NULL
+                  AND expiry_date IS NOT NULL
+                  AND expiry_date >= CURRENT_DATE - INTERVAL '12 months'
+                  AND expiry_date < CURRENT_DATE
+            """)
+            retention_row = dict(cur.fetchone())
+            for k in ("renewed_comm", "lost_comm"):
+                if retention_row.get(k) is not None:
+                    retention_row[k] = float(retention_row[k])
+            total_exp = int(retention_row.get("total_expired") or 0)
+            renewed = int(retention_row.get("renewed") or 0)
+            retention_row["retention_rate"] = round(renewed / total_exp * 100, 1) if total_exp > 0 else 0
+
+    # Bucket upcoming by urgency
+    within_30 = [r for r in upcoming if r["days_to_expiry"] is not None and r["days_to_expiry"] <= 30]
+    within_60 = [r for r in upcoming if r["days_to_expiry"] is not None and 30 < r["days_to_expiry"] <= 60]
+    within_90 = [r for r in upcoming if r["days_to_expiry"] is not None and 60 < r["days_to_expiry"] <= 90]
+
+    revenue_at_risk = sum(r.get("estimated_gbp_commission") or 0 for r in upcoming)
+
+    return jsonify({
+        "upcoming": upcoming,
+        "within_30": len(within_30),
+        "within_60": len(within_60),
+        "within_90": len(within_90),
+        "revenue_at_risk_gbp": round(revenue_at_risk, 2),
+        "retention": retention_row,
+    })
+
+
+@app.get("/mi/producer-performance")
+@require_admin
+@rate_limited("default_read")
+def mi_producer_performance():
+    """Producer performance: submissions, conversions, commission."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute("""
+                SELECT
+                    pe.id AS producer_id,
+                    pe.name AS producer_name,
+                    COUNT(DISTINCT r.id) AS total_risks,
+                    SUM(CASE WHEN r.status = 'bound' THEN 1 ELSE 0 END) AS bound_cnt,
+                    SUM(CASE WHEN r.status IN ('submission','in_market','quoted','firm_order') THEN 1 ELSE 0 END) AS pipeline_cnt,
+                    SUM(CASE WHEN r.status = 'closed_ntu' THEN 1 ELSE 0 END) AS ntu_cnt,
+                    COALESCE(SUM(r.estimated_gbp_commission), 0) AS est_comm,
+                    COALESCE(SUM(r.locked_gbp_commission), 0) AS locked_comm,
+                    COALESCE(SUM(CASE WHEN r.status = 'bound' THEN r.estimated_gbp_commission ELSE 0 END), 0) AS bound_comm,
+                    COUNT(DISTINCT e.id) AS insured_count
+                FROM entities pe
+                JOIN entities e ON e.parent_id = pe.id AND e.entity_type = 'insured'
+                JOIN risks r ON r.entity_id = e.id AND r.merged_into_risk_id IS NULL
+                WHERE pe.entity_type = 'producer'
+                GROUP BY pe.id, pe.name
+                ORDER BY est_comm DESC
+            """)
+            producers = []
+            for row in cur.fetchall():
+                d = dict(row)
+                bound = int(d.get("bound_cnt") or 0)
+                ntu = int(d.get("ntu_cnt") or 0)
+                decided = bound + ntu
+                d["conversion_rate"] = round(bound / decided * 100, 1) if decided > 0 else 0
+                for k in ("est_comm", "locked_comm", "bound_comm"):
+                    if d.get(k) is not None:
+                        d[k] = float(d[k])
+                producers.append(d)
+
+            # Also get risks NOT linked to any entity (unlinked)
+            cur.execute("""
+                SELECT COUNT(*) AS cnt,
+                       COALESCE(SUM(estimated_gbp_commission), 0) AS est_comm
+                FROM risks
+                WHERE merged_into_risk_id IS NULL AND entity_id IS NULL
+            """)
+            unlinked = dict(cur.fetchone())
+            unlinked["est_comm"] = float(unlinked["est_comm"])
+
+    return jsonify({
+        "producers": producers,
+        "unlinked_risks": unlinked,
+    })
 
 
 if __name__ == "__main__":
