@@ -1190,7 +1190,6 @@
     <button class="ptab active" id="ent-tab-accounts" onclick="entView('accounts')">Accounts</button>
     <button class="ptab" id="ent-tab-book" onclick="entView('book')">Portfolio by Year</button>
     <button class="ptab" id="ent-tab-dashboard" onclick="entView('dashboard')">📊 Dashboard</button>
-    <button class="ptab" id="ent-tab-aprt" onclick="entView('aprt')">⚖ AP/RP</button>
   </div>
 
   <!-- ACCOUNTS VIEW -->
@@ -1234,10 +1233,7 @@
     <div id="dashboard-content"><p class="muted" style="padding:20px 0">Loading dashboard...</p></div>
   </div>
 
-  <!-- AP/RP SUMMARY VIEW -->
-  <div id="ent-aprt-view" style="display:none">
-    <div id="aprt-content"></div>
-  </div>
+  <!-- P22: AP/RP tab removed — ledger entries now show inline in Portfolio by Year via £ button -->
 
   <div id="ent-book-view" style="display:none">
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
@@ -1257,7 +1253,7 @@
         <div class="muted" style="margin-bottom:4px;font-size:11px">Status</div>
         <select id="book-status" onchange="renderBook()">
           <option value="">All</option>
-          <option value="bound">Bound</option>
+          <option value="bound" selected>Bound</option>
           <option value="renewal_pending">Renewal pending</option>
           <option value="in_market">In market</option>
           <option value="quoted">Quoted</option>
@@ -2466,7 +2462,7 @@
 
 <script src="js/extensions.js"></script>
 
-<script src="js/patches.js"></script>
+<!-- P22: patches.js removed — AP/RP tab retired, ledger sub-rows in Portfolio by Year -->
 
 <script src="js/workflow.js"></script>
 <script src="js/comparison.js"></script>

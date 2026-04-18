@@ -2513,9 +2513,10 @@ async function openEntityCard(entityId) {
       '</div>';
     if (notesArr.length) {
       notesHtml += notesArr.map(function(n) {
+        var cleanSummary = cleanNoteSummary(n.summary || '');
         return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
           '<div style="font-size:11px;color:var(--text2)">' + (n.note_date || '—') + ' · ' + escapeHtml(n.handler || '') + ' · ' + escapeHtml(n.doc_type || '') + '</div>' +
-          '<div style="font-size:12px;margin-top:3px">' + escapeHtml(n.summary || '') + '</div>' +
+          '<div style="font-size:12px;margin-top:3px">' + escapeHtml(cleanSummary) + '</div>' +
           (n.actions && n.actions.length ? '<div style="margin-top:4px;font-size:11px;color:var(--text2)">Actions: ' + n.actions.map(escapeHtml).join('; ') + '</div>' : '') +
           '</div>';
       }).join('');
@@ -6585,14 +6586,31 @@ var _bookLedgerCache = {};
 
 function renderLedgerEntries(row){
   var entries = row.ledger || [];
+  var riskId = row.id;
   if(!entries.length) return '<div class="muted" style="font-size:11px;padding:4px 0">No entries yet. Click + Add entry.</div>';
-  function fG(n){return n!=null?'£'+Math.round(n).toLocaleString():'—';}
+  function fG(n){return n!=null?'\u00a3'+Math.round(n).toLocaleString():'\u2014';}
+
+  // AP/RP/Net summary
+  var totals = { original: 0, ap: 0, rp: 0, pc: 0, adj: 0 };
+  entries.forEach(function(e){ var amt = parseFloat(e.gbpComm) || 0; if(totals.hasOwnProperty(e.type)) totals[e.type] += amt; });
+  var net = totals.original + totals.pc + totals.adj - totals.ap - totals.rp;
+  var nc = net >= 0 ? 'var(--ok)' : 'var(--err)';
+  var summaryHtml = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px;font-size:10px">'
+    + (totals.original ? '<span style="color:var(--ok);font-weight:600">Invoiced ' + fG(totals.original) + '</span>' : '')
+    + (totals.ap ? '<span style="color:#185FA5;font-weight:600">AP ' + fG(totals.ap) + '</span>' : '')
+    + (totals.rp ? '<span style="color:#A32D2D;font-weight:600">RP ' + fG(totals.rp) + '</span>' : '')
+    + (totals.pc ? '<span style="color:#854F0B;font-weight:600">PC ' + fG(totals.pc) + '</span>' : '')
+    + (totals.adj ? '<span style="color:var(--text2);font-weight:600">Adj ' + fG(totals.adj) + '</span>' : '')
+    + '<span style="font-weight:700;color:' + nc + '">Net ' + fG(net) + '</span>'
+    + '</div>';
+
   var bal=0;
   var sorted=entries.slice().sort(function(a,b){return (a.invoiceDate||'').localeCompare(b.invoiceDate||'');});
-  var h='<table style="width:100%;font-size:11px;border-collapse:collapse"><tr style="background:var(--surface)"><th style="padding:4px 8px;text-align:left">Date</th><th>Type</th><th>Ref</th><th style="text-align:right">GBP comm</th><th style="text-align:right">Balance</th></tr>';
-  sorted.forEach(function(e){var isRP=e.type==='rp';var gbp=parseFloat(e.gbpComm)||0;bal+=isRP?-gbp:gbp;var t=LEDGER_TYPES_NEW[e.type]||LEDGER_TYPES_NEW.original;h+='<tr style="border-bottom:0.5px solid var(--border)"><td style="padding:4px 8px">'+(e.invoiceDate||'—')+'</td><td style="padding:4px 8px"><span style="background:'+t.bg+';color:'+t.col+';font-size:9px;font-weight:700;padding:1px 7px;border-radius:8px">'+t.label+'</span></td><td style="padding:4px 8px;color:var(--text2)">'+(e.ref||e.notes||'—')+'</td><td style="padding:4px 8px;text-align:right;font-weight:600;color:'+(isRP?'var(--err)':'var(--ok)')+'">'+( isRP?'('+fG(gbp)+')':fG(gbp))+'</td><td style="padding:4px 8px;text-align:right;font-weight:700;color:'+(bal>=0?'var(--ok)':'var(--err)')+'">'+fG(bal)+'</td></tr>';});
-  var tot=sorted.reduce(function(s,e){return s+(e.type==='rp'?-(parseFloat(e.gbpComm)||0):(parseFloat(e.gbpComm)||0));},0);h+='<tr style="background:var(--bg);font-weight:700;border-top:1px solid var(--border)"><td colspan="3" style="padding:5px 8px">Total</td><td style="padding:5px 8px;text-align:right;color:'+(tot>=0?'var(--ok)':'var(--err)')+'">'+fG(tot)+'</td><td></td></tr>';return h+'</table>';
+  var h= summaryHtml + '<table style="width:100%;font-size:11px;border-collapse:collapse"><tr style="background:var(--surface)"><th style="padding:4px 8px;text-align:left">Date</th><th>Type</th><th>Ref</th><th style="text-align:right">GBP</th><th style="text-align:right">Balance</th><th></th></tr>';
+  sorted.forEach(function(e){var isRP=e.type==='rp';var gbp=parseFloat(e.gbpComm)||0;bal+=isRP?-gbp:gbp;var t=LEDGER_TYPES_NEW[e.type]||LEDGER_TYPES_NEW.original;h+='<tr style="border-bottom:0.5px solid var(--border)"><td style="padding:4px 8px">'+(e.invoiceDate||'\u2014')+'</td><td style="padding:4px 8px"><span style="background:'+t.bg+';color:'+t.col+';font-size:9px;font-weight:700;padding:1px 7px;border-radius:8px">'+t.label+'</span></td><td style="padding:4px 8px;color:var(--text2)">'+(e.ref||e.notes||'\u2014')+'</td><td style="padding:4px 8px;text-align:right;font-weight:600;color:'+(isRP?'var(--err)':'var(--ok)')+'">'+(isRP?'('+fG(gbp)+')':fG(gbp))+'</td><td style="padding:4px 8px;text-align:right;font-weight:700;color:'+(bal>=0?'var(--ok)':'var(--err)')+'">'+fG(bal)+'</td><td style="padding:2px 4px"><button onclick="deleteLedgerEntryBook(\''+riskId+'\','+e.id+')" style="border:none;background:none;cursor:pointer;color:var(--text3);font-size:12px" title="Delete">\u2715</button></td></tr>';});
+  return h+'</table>';
 }
+
 
 async function toggleLedger(rowId,evt){
   if(evt)evt.stopPropagation();
@@ -6625,14 +6643,9 @@ async function toggleLedger(rowId,evt){
 }
 
 function openAddLedgerEntry(rowId){_lRowId=rowId;_lEntId=null;document.getElementById('le-type').value='original';document.getElementById('le-date').value=new Date().toISOString().slice(0,10);document.getElementById('le-ccy').value='GBP';['le-native','le-gbp','le-rate','le-ref','le-notes'].forEach(function(id){var el=document.getElementById(id);if(el)el.value='';});document.getElementById('le-modal-title').textContent='Add entry';document.getElementById('le-delete-btn').style.display='none';document.getElementById('le-modal').style.display='block';}
-function openEditLedgerEntry(rowId,entryId){showNotice('Editing existing backend ledger entries is not wired yet','warn');}
+function openEditLedgerEntry(rowId,entryId){showNotice('Use the risk card to edit ledger entries','warn');}
 async function saveLedgerEntry(){var gbp=parseFloat((document.getElementById('le-gbp').value||'').replace(/[^0-9.-]/g,''))||0;if(!gbp){showNotice('GBP amount required','err');return;}try{await apiFetch('/risks/'+_lRowId+'/ledger',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entry_type:document.getElementById('le-type').value,entry_date:document.getElementById('le-date').value,accounting_year:parseInt((document.getElementById('book-year')||{value:'2026'}).value,10),currency:document.getElementById('le-ccy').value||'GBP',original_amount:parseFloat(document.getElementById('le-native').value)||null,gbp_amount:gbp,description:(document.getElementById('le-ref').value||document.getElementById('le-notes').value||'').trim(),source:'manual'})});document.getElementById('le-modal').style.display='none';showNotice('✓ Saved','ok');toggleLedger(_lRowId);}catch(e){showNotice('Save failed: '+e.message,'err');}}
-function deleteLedgerEntry(){showNotice('Delete for backend ledger entries is not wired yet','warn');}
-
-function openAddLedgerEntry(rowId){_lRowId=rowId;_lEntId=null;var s=getBookState(),row=(s.bookRows||[]).find(function(r){return r.id===rowId;});document.getElementById('le-type').value='original';document.getElementById('le-date').value=new Date().toLocaleDateString('en-GB');document.getElementById('le-ccy').value=row?(row.ccy||'USD'):'USD';['le-native','le-gbp','le-rate','le-ref','le-notes'].forEach(function(id){var el=document.getElementById(id);if(el)el.value='';});document.getElementById('le-modal-title').textContent='Add entry — '+(row?row.displayName||row.assured:'');document.getElementById('le-delete-btn').style.display='none';document.getElementById('le-modal').style.display='block';}
-function openEditLedgerEntry(rowId,entryId){_lRowId=rowId;_lEntId=entryId;var s=getBookState(),row=(s.bookRows||[]).find(function(r){return r.id===rowId;}),e=(row&&row.ledger||[]).find(function(e){return e.id===entryId;});if(!e)return;document.getElementById('le-type').value=e.type||'original';document.getElementById('le-date').value=e.invoiceDate||'';document.getElementById('le-ccy').value=e.ccy||'USD';document.getElementById('le-native').value=e.nativeAmount||'';document.getElementById('le-gbp').value=e.gbpComm||'';document.getElementById('le-rate').value=e.fxRate||'';document.getElementById('le-ref').value=e.ref||'';document.getElementById('le-notes').value=e.notes||'';document.getElementById('le-modal-title').textContent='Edit entry — '+(row?row.displayName||row.assured:'');document.getElementById('le-delete-btn').style.display='inline-block';document.getElementById('le-modal').style.display='block';}
-function saveLedgerEntry(){var s=getBookState(),row=(s.bookRows||[]).find(function(r){return r.id===_lRowId;});if(!row){showNotice('Row not found','err');return;}if(!row.ledger)row.ledger=[];var gbp=parseFloat((document.getElementById('le-gbp').value||'').replace(/[^0-9.-]/g,''))||0;if(!gbp){showNotice('GBP amount required','err');return;}var entry={id:_lEntId||'le-'+Date.now(),type:document.getElementById('le-type').value,invoiceDate:document.getElementById('le-date').value,ccy:document.getElementById('le-ccy').value,nativeAmount:parseFloat(document.getElementById('le-native').value)||null,gbpComm:gbp,fxRate:document.getElementById('le-rate').value||null,ref:document.getElementById('le-ref').value,notes:document.getElementById('le-notes').value};if(_lEntId){var i=row.ledger.findIndex(function(e){return e.id===_lEntId;});if(i>-1)row.ledger[i]=entry;else row.ledger.push(entry);}else row.ledger.push(entry);var lt=new Set(['original','ap','rp','adj']);row.gbpComm=Math.round(row.ledger.filter(function(e){return lt.has(e.type);}).reduce(function(s,e){return s+(e.type==='rp'?-(parseFloat(e.gbpComm)||0):(parseFloat(e.gbpComm)||0));},0));ss(s);document.getElementById('le-modal').style.display='none';var el=document.getElementById('ledger-entries-'+_lRowId);if(el)el.innerHTML=renderLedgerEntries(row);showNotice('✓ Saved','ok');}
-function deleteLedgerEntry(){if(!confirm('Delete?'))return;var s=getBookState(),row=(s.bookRows||[]).find(function(r){return r.id===_lRowId;});if(!row)return;row.ledger=(row.ledger||[]).filter(function(e){return e.id!==_lEntId;});var lt=new Set(['original','ap','rp','adj']);row.gbpComm=row.ledger.length?Math.round(row.ledger.filter(function(e){return lt.has(e.type);}).reduce(function(s,e){return s+(e.type==='rp'?-(parseFloat(e.gbpComm)||0):(parseFloat(e.gbpComm)||0));},0)):null;ss(s);document.getElementById('le-modal').style.display='none';showNotice('Deleted','ok');}
+async function deleteLedgerEntryBook(rowId, entryId){if(!confirm('Delete this ledger entry?'))return;try{await apiFetch('/risks/'+rowId+'/ledger/'+entryId,{method:'DELETE'});showNotice('Deleted','ok');toggleLedger(rowId);}catch(e){showNotice('Delete failed: '+e.message,'err');}}
 function leCalcGbp(){var n=parseFloat(document.getElementById('le-native').value)||0,r=parseFloat(document.getElementById('le-rate').value)||0,c=document.getElementById('le-ccy').value;if(n&&r&&c!=='GBP')document.getElementById('le-gbp').value=Math.round(n/r);else if(n&&c==='GBP')document.getElementById('le-gbp').value=Math.round(n);}
 
 // FX entity synthesis
@@ -8349,4 +8362,29 @@ async function deleteLedgerEntry(riskId, entryId) {
   } catch (e) {
     showNotice('Failed to delete: ' + e.message, 'err');
   }
+}
+
+// P22: Clean raw JSON wrapper from entity note summaries
+function cleanNoteSummary(text) {
+  if (!text) return '';
+  var s = text.trim();
+  // Strip ```json ... ``` wrapper
+  if (s.indexOf('```json') === 0) {
+    s = s.replace(/^```json\s*/, '').replace(/```\s*$/, '').trim();
+  }
+  if (s.indexOf('```') === 0) {
+    s = s.replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+  }
+  // Try parsing as JSON and extracting summary field
+  if (s.charAt(0) === '{') {
+    try {
+      var obj = JSON.parse(s);
+      if (obj.summary) return obj.summary;
+    } catch(e) {
+      // Partial JSON — try extracting summary with regex
+      var m = s.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (m) return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    }
+  }
+  return s;
 }
