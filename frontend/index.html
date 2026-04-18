@@ -16,7 +16,7 @@
     </div>
     <div>
       <div style="font-size:13px;font-weight:700;color:#fff;line-height:1.2;letter-spacing:-0.01em">OG Broking</div>
-      <div style="font-size:10px;color:var(--text3);line-height:1.2;color:rgba(255,255,255,0.4);font-size:10px">Placement Tool &nbsp;·&nbsp; <span style="font-family:var(--font-mono)">v22.0 · 18 Apr 2026</span></div>
+      <div style="font-size:10px;color:var(--text3);line-height:1.2;color:rgba(255,255,255,0.4);font-size:10px">Placement Tool &nbsp;·&nbsp; <span style="font-family:var(--font-mono)">v23.0 · 18 Apr 2026</span></div>
     </div>
   </div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:rgba(255,255,255,0.4)">
@@ -117,6 +117,8 @@
   <div style="display:flex;gap:6px">
     <button class="btn primary" onclick="cwShowEmailPanel()" style="font-size:11px;padding:5px 12px">✉ Generate email</button>
     <button class="btn" onclick="cwExportBordereau()" style="font-size:11px;padding:5px 12px;background:#1a2744;color:#fff;border-color:#1a2744">📋 Bordereau CSV</button>
+    <button class="btn" onclick="cwOpenAddRisk()" style="font-size:11px;padding:5px 12px;background:#059669;color:#fff;border-color:#059669">+ Add risk</button>
+    <button class="btn" onclick="migrateLocalCwToPG()" id="cw-migrate-btn" style="font-size:11px;padding:5px 12px;background:#E8F5E9;color:#1B5E20;border-color:#A5D6A7" title="Import CW risks from browser storage">⬆ Import</button>
   </div>
 </div>
 
@@ -168,6 +170,35 @@
         </td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+<!-- CW Add/Edit Modal -->
+<div id="cw-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;overflow-y:auto;padding:24px 16px">
+  <div class="card" style="max-width:560px;margin:0 auto;padding:20px">
+    <div class="sh" id="cw-modal-title">Add risk</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="fg"><label>Vessel</label><input type="text" id="cw-m-vessel" placeholder="MV Example"></div>
+      <div class="fg"><label>IMO</label><input type="text" id="cw-m-imo" placeholder="9876543"></div>
+      <div class="fg"><label>Insured</label><input type="text" id="cw-m-insured"></div>
+      <div class="fg"><label>Cedant</label><input type="text" id="cw-m-cedant"></div>
+      <div class="fg" style="grid-column:span 2"><label>Goods</label><input type="text" id="cw-m-goods" placeholder="Steel coils, chemicals, etc."></div>
+      <div class="fg"><label>TSI (USD)</label><input type="number" id="cw-m-tsi" placeholder="500000"></div>
+      <div class="fg"><label>Status</label><select id="cw-m-status"><option value="enquiry">Enquiry</option><option value="quoted">Quoted</option><option value="rtb">Request to Bind</option><option value="firm">Firm order</option><option value="bound">Bound</option><option value="declined">Declined</option></select></div>
+      <div class="fg"><label>Loading port</label><input type="text" id="cw-m-from"></div>
+      <div class="fg"><label>Discharge port</label><input type="text" id="cw-m-to"></div>
+      <div class="fg"><label>Loading date</label><input type="text" id="cw-m-loaddate" placeholder="DD/MM/YYYY"></div>
+      <div class="fg"><label>Sbox ref</label><input type="text" id="cw-m-sbox"></div>
+      <div class="fg"><label>Rate (%)</label><input type="number" id="cw-m-rate" step="0.001" placeholder="0.035"></div>
+      <div class="fg"><label>Min premium (USD)</label><input type="number" id="cw-m-minprem"></div>
+      <div class="fg"><label>Producer</label><input type="text" id="cw-m-producer" placeholder="Integra"></div>
+      <div class="fg" style="grid-column:span 2"><label>Notes</label><input type="text" id="cw-m-notes"></div>
+    </div>
+    <input type="hidden" id="cw-m-edit-id">
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn primary" onclick="cwSaveModal()">Save</button>
+      <button class="btn" onclick="document.getElementById('cw-modal').style.display='none'">Cancel</button>
+    </div>
   </div>
 </div>
 
@@ -1705,6 +1736,7 @@
     </div>
     <button class="btn primary" onclick="openAddContact()">+ Add contact</button>
     <button class="btn" onclick="dedupeContacts()" title="Merge duplicate contacts by name">Deduplicate</button>
+    <button class="btn" onclick="migrateContactsToPG()" title="Import contacts from browser storage to server" id="con-migrate-btn" style="background:#E8F5E9;color:#1B5E20;border-color:#A5D6A7">⬆ Import from browser</button>
     <div id="con-count" class="muted" style="font-size:11px;padding-bottom:2px"></div>
   </div>
   <div id="con-list"></div>

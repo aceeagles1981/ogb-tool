@@ -4412,10 +4412,12 @@ async function renderHomeTileStats(){
   const el = document.getElementById('home-greeting');
   if(el) el.textContent = greet + ' · ' + days[new Date().getDay()] + ', ' + new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
 
-  // Contacts stat (still localStorage — not migrated yet)
-  const s = gs();
+  // Contacts stat from PG
   const cEl = document.getElementById('home-stat-contacts');
-  if(cEl) cEl.textContent = (s.contacts||[]).length + ' contacts';
+  try {
+    var conData = await apiFetch('/contacts');
+    if(cEl) cEl.textContent = (conData.total || 0) + ' contacts';
+  } catch(e) { if(cEl) cEl.textContent = '—'; }
 
   // Fetch PG data for hero stats
   try {
@@ -4872,73 +4874,74 @@ function deleteTarget(){
 
 // ─── CONTACT UPSERT ──────────────────────────────────────────────────────────
 
-function upsertContacts(contacts, insuredName){
+async function upsertContacts(contacts, insuredName){
   if(!contacts||!contacts.length) return;
-  const s = gs();
-  if(!s.contacts) s.contacts = [];
-  const today = new Date().toISOString().slice(0,10);
-  let added = 0, updated = 0;
-  contacts.forEach(c => {
-    if(!c.name && !c.email) return;
-    const email = (c.email||'').trim().toLowerCase();
-    const name = (c.name||'').trim();
-    // Skip obviously generic addresses
-    if(email && (email.startsWith('noreply') || email.startsWith('no-reply') || email.startsWith('info@'))) return;
-    // Match on email first, then name if no email
-    let existing = email ? s.contacts.find(x => x.email === email) : null;
-    if(!existing && name) existing = s.contacts.find(x => x.name.toLowerCase() === name.toLowerCase());
-    if(existing){
-      // Update with better data — email beats no email, fill in blanks
-      if(email && !existing.email) existing.email = email;
-      if(c.phone && !existing.phone) existing.phone = c.phone;
-      if(c.firm && !existing.firm) existing.firm = c.firm;
-      if(c.role && !existing.role) existing.role = c.role;
-      existing.lastSeen = today;
-      updated++;
-    } else {
-      s.contacts.push({
-        id: 'con-' + Date.now() + '-' + Math.random().toString(36).slice(2,5),
-        name, email,
-        phone: c.phone||'', firm: c.firm||'', role: c.role||'',
-        notes: insuredName ? 'Re: '+insuredName : '',
-        source: 'ingest', lastSeen: today
-      });
-      added++;
-    }
-  });
-  ss(s);
-  if(added||updated) console.log(`Contacts: +${added} added, ${updated} updated from backend`);
+  try {
+    const resp = await apiFetch('/contacts/upsert', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ contacts, insured_name: insuredName || '' })
+    });
+    if(resp.added || resp.updated) console.log(`Contacts: +${resp.added} added, ${resp.updated} updated from backend`);
+  } catch(e) {
+    console.error('upsertContacts failed:', e);
+  }
 }
 
-function dedupeContacts(){
-  const s = gs();
-  if(!s.contacts||!s.contacts.length) return;
-  const before = s.contacts.length;
-  const merged = [];
-  const seen = {}; // name.toLowerCase() -> index in merged
-
-  s.contacts.forEach(c => {
-    const key = (c.name||'').trim().toLowerCase();
-    if(!key) { merged.push(c); return; }
-    if(seen[key] !== undefined){
-      // Merge into existing — keep best data
-      const existing = merged[seen[key]];
-      if(c.email && !existing.email) existing.email = c.email;
-      if(c.phone && !existing.phone) existing.phone = c.phone;
-      if(c.firm && !existing.firm) existing.firm = c.firm;
-      if(c.role && !existing.role) existing.role = c.role;
-      if(c.lastSeen > (existing.lastSeen||'')) existing.lastSeen = c.lastSeen;
-    } else {
-      seen[key] = merged.length;
-      merged.push({...c});
+async function dedupeContacts(){
+  // Server-side: fetch all, group by lowercase name, merge duplicates
+  try {
+    const data = await apiFetch('/contacts');
+    const all = data.items || [];
+    if(!all.length) { showNotice('No contacts to deduplicate','warn'); return; }
+    const byName = {};
+    const toDelete = [];
+    all.forEach(c => {
+      const key = (c.name||'').trim().toLowerCase();
+      if(!key) return;
+      if(byName[key]) {
+        // Merge into first — update first with any better data from duplicate
+        const keeper = byName[key];
+        const updates = {};
+        if(c.email && !keeper.email) updates.email = c.email;
+        if(c.phone && !keeper.phone) updates.phone = c.phone;
+        if(c.firm && !keeper.firm) updates.firm = c.firm;
+        if(c.role && !keeper.role) updates.role = c.role;
+        if(c.last_seen && (!keeper.last_seen || c.last_seen > keeper.last_seen)) updates.last_seen = c.last_seen;
+        if(Object.keys(updates).length) {
+          apiFetch('/contacts/' + keeper.id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(updates)}).catch(()=>{});
+          Object.assign(keeper, updates);
+        }
+        toDelete.push(c.id);
+      } else {
+        byName[key] = c;
+      }
+    });
+    for(const id of toDelete) {
+      await apiFetch('/contacts/' + id, {method:'DELETE'}).catch(()=>{});
     }
-  });
+    showNotice(`✓ Deduplicated: ${toDelete.length} duplicates removed, ${all.length - toDelete.length} contacts remaining`, 'ok');
+    renderContacts();
+  } catch(e) { showNotice('Deduplicate failed','err'); }
+}
 
-  s.contacts = merged;
-  ss(s);
-  const removed = before - merged.length;
-  showNotice(`✓ Deduplicated: ${removed} duplicates removed, ${merged.length} contacts remaining`, 'ok');
-  renderContacts();
+async function migrateContactsToPG() {
+  const s = gs();
+  const contacts = s.contacts || [];
+  if (!contacts.length) { showNotice('No contacts in browser storage to import', 'warn'); return; }
+  if (!confirm(`Import ${contacts.length} contacts from browser storage to server?`)) return;
+  try {
+    const resp = await apiFetch('/contacts/import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ contacts })
+    });
+    showNotice(`✓ Imported: ${resp.added} added, ${resp.updated} updated, ${resp.skipped} skipped. Total: ${resp.total}`, 'ok');
+    renderContacts();
+    // Hide the migrate button after successful import
+    var btn = document.getElementById('con-migrate-btn');
+    if (btn) btn.style.display = 'none';
+  } catch(e) { showNotice('Import failed: ' + (e.message || ''), 'err'); }
 }
 
 // ─── CLAUSE LIBRARY ───────────────────────────────────────────────────────────
@@ -6098,39 +6101,38 @@ function showBatchSummary(){
 
 // ─── CONTACTS ────────────────────────────────────────────────────────────────
 
-function renderContacts(){
-  const s = gs();
+async function renderContacts(){
+  const el = document.getElementById('con-list');
+  const countEl = document.getElementById('con-count');
   const q = (document.getElementById('con-search')||{}).value||'';
-  const lq = q.toLowerCase();
-  const all = s.contacts||[];
-  const filtered = lq ? all.filter(c =>
-    (c.name||'').toLowerCase().includes(lq) ||
-    (c.email||'').toLowerCase().includes(lq) ||
-    (c.firm||'').toLowerCase().includes(lq) ||
-    (c.phone||'').toLowerCase().includes(lq)
-  ) : all;
-  const sorted = [...filtered].sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-  document.getElementById('con-count').textContent = filtered.length+' of '+all.length+' contacts';
-  const list = document.getElementById('con-list');
-  if(!sorted.length){
-    list.innerHTML='<p class="muted">No contacts yet. Add manually or ingest emails to build the address book automatically.</p>';
-    return;
+  try {
+    const params = q ? '?q=' + encodeURIComponent(q) : '';
+    const data = await apiFetch('/contacts' + params);
+    const all = data.items || [];
+    if (countEl) countEl.textContent = all.length + ' contacts';
+    if(!all.length){
+      el.innerHTML='<p class="muted">No contacts yet. Add manually or ingest emails to build the address book automatically.</p>';
+      return;
+    }
+    el.innerHTML = `<table style="width:100%">
+      <tr><th>Name</th><th>Email</th><th>Phone</th><th>Firm</th><th>Role</th><th>Last seen</th><th></th></tr>
+      ${all.map(c=>`<tr>
+        <td><strong>${c.name||'—'}</strong></td>
+        <td>${c.email ? `<a href="mailto:${c.email}" style="color:var(--accent)">${c.email}</a>` : '—'}</td>
+        <td>${c.phone||'—'}</td>
+        <td>${c.firm||'—'}</td>
+        <td><span class="muted" style="font-size:11px">${c.role||'—'}</span></td>
+        <td><span class="muted" style="font-size:11px">${c.last_seen||c.source||'—'}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn sm" onclick="openEditContact(${c.id})">Edit</button>
+          <button class="btn sm" onclick="deleteContact(${c.id})" style="color:var(--err);border-color:var(--err)40;margin-left:4px">✕</button>
+        </td>
+      </tr>`).join('')}
+    </table>`;
+  } catch(e) {
+    console.error('renderContacts failed:', e);
+    if(el) el.innerHTML = '<p class="muted" style="color:var(--err)">Failed to load contacts from server.</p>';
   }
-  list.innerHTML = `<table style="width:100%">
-    <tr><th>Name</th><th>Email</th><th>Phone</th><th>Firm</th><th>Role</th><th>Last seen</th><th></th></tr>
-    ${sorted.map(c=>`<tr>
-      <td><strong>${c.name||'—'}</strong></td>
-      <td>${c.email ? `<a href="mailto:${c.email}" style="color:var(--accent)">${c.email}</a>` : '—'}</td>
-      <td>${c.phone||'—'}</td>
-      <td>${c.firm||'—'}</td>
-      <td><span class="muted" style="font-size:11px">${c.role||'—'}</span></td>
-      <td><span class="muted" style="font-size:11px">${c.lastSeen||c.source||'—'}</span></td>
-      <td style="white-space:nowrap">
-        <button class="btn sm" onclick="openEditContact('${c.id}')">Edit</button>
-        <button class="btn sm" onclick="deleteContact('${c.id}')" style="color:var(--err);border-color:var(--err)40;margin-left:4px">✕</button>
-      </td>
-    </tr>`).join('')}
-  </table>`;
 }
 
 function openAddContact(){
@@ -6142,68 +6144,62 @@ function openAddContact(){
   document.getElementById('con-modal').style.display='block';
 }
 
-function openEditContact(id){
-  const s=gs();
-  const c=(s.contacts||[]).find(x=>x.id===id);
-  if(!c) return;
-  document.getElementById('con-name').value=c.name||'';
-  document.getElementById('con-email').value=c.email||'';
-  document.getElementById('con-phone').value=c.phone||'';
-  document.getElementById('con-firm').value=c.firm||'';
-  document.getElementById('con-role').value=c.role||'';
-  document.getElementById('con-notes').value=c.notes||'';
-  document.getElementById('con-edit-id').value=id;
-  document.getElementById('con-modal-title').textContent='Edit contact';
-  document.getElementById('con-delete-btn').style.display='inline-block';
-  document.getElementById('con-modal').style.display='block';
+async function openEditContact(id){
+  try {
+    const data = await apiFetch('/contacts?q=');
+    const c = (data.items || []).find(x => x.id === id);
+    if(!c) { showNotice('Contact not found','err'); return; }
+    document.getElementById('con-name').value=c.name||'';
+    document.getElementById('con-email').value=c.email||'';
+    document.getElementById('con-phone').value=c.phone||'';
+    document.getElementById('con-firm').value=c.firm||'';
+    document.getElementById('con-role').value=c.role||'';
+    document.getElementById('con-notes').value=c.notes||'';
+    document.getElementById('con-edit-id').value=id;
+    document.getElementById('con-modal-title').textContent='Edit contact';
+    document.getElementById('con-delete-btn').style.display='inline-block';
+    document.getElementById('con-modal').style.display='block';
+  } catch(e) { showNotice('Failed to load contact','err'); }
 }
 
-function saveContact(){
-  const s=gs();
-  if(!s.contacts) s.contacts=[];
+async function saveContact(){
   const editId=document.getElementById('con-edit-id').value.trim();
   const name=document.getElementById('con-name').value.trim();
   const email=document.getElementById('con-email').value.trim().toLowerCase();
   if(!name&&!email){showNotice('Name or email required','err');return;}
-  if(editId){
-    const idx=s.contacts.findIndex(c=>c.id===editId);
-    if(idx>-1){
-      s.contacts[idx]={...s.contacts[idx],name,email,
-        phone:document.getElementById('con-phone').value.trim(),
-        firm:document.getElementById('con-firm').value.trim(),
-        role:document.getElementById('con-role').value.trim(),
-        notes:document.getElementById('con-notes').value.trim()};
+  const payload = {
+    name, email,
+    phone: document.getElementById('con-phone').value.trim(),
+    firm: document.getElementById('con-firm').value.trim(),
+    role: document.getElementById('con-role').value.trim(),
+    notes: document.getElementById('con-notes').value.trim(),
+  };
+  try {
+    if(editId){
+      await apiFetch('/contacts/' + editId, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    } else {
+      const resp = await apiFetch('/contacts', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      if(resp.error) { showNotice(resp.error,'err'); return; }
     }
-  } else {
-    // Check for duplicate email
-    const exists=email&&s.contacts.find(c=>c.email===email);
-    if(exists){showNotice('Contact with this email already exists','err');return;}
-    s.contacts.push({
-      id:'con-'+Date.now(),
-      name, email,
-      phone:document.getElementById('con-phone').value.trim(),
-      firm:document.getElementById('con-firm').value.trim(),
-      role:document.getElementById('con-role').value.trim(),
-      notes:document.getElementById('con-notes').value.trim(),
-      source:'manual',
-      lastSeen:new Date().toISOString().slice(0,10)
-    });
+    document.getElementById('con-modal').style.display='none';
+    showNotice(editId ? 'Contact updated' : 'Contact added', 'ok');
+    renderContacts();
+  } catch(e) {
+    showNotice(e.message || 'Save failed','err');
   }
-  ss(s);
-  document.getElementById('con-modal').style.display='none';
-  renderContacts();
 }
 
-function deleteContact(id){
+async function deleteContact(id){
   const targetId = id || document.getElementById('con-edit-id').value;
   if(!targetId) return;
   if(!confirm('Delete this contact?')) return;
-  const s=gs();
-  s.contacts=(s.contacts||[]).filter(c=>c.id!==targetId);
-  ss(s);
-  const modal=document.getElementById('con-modal');
-  if(modal) modal.style.display='none';
-  renderContacts();
+  try {
+    await apiFetch('/contacts/' + targetId, {method:'DELETE'});
+    showNotice('Contact deleted','ok');
+    const modal=document.getElementById('con-modal');
+    if(modal) modal.style.display='none';
+    renderContacts();
+  } catch(e) { showNotice('Delete failed','err'); }
 }
 
 // Upsert contacts extracted from email ingest
@@ -6233,35 +6229,8 @@ ${(emailData.body||'').slice(0,3000)}`;
     const clean = raw.replace(/```json|```/g,'').trim();
     const extracted = JSON.parse(clean);
     if(!Array.isArray(extracted)||!extracted.length) return;
-    const s = gs();
-    if(!s.contacts) s.contacts=[];
-    const today = new Date().toISOString().slice(0,10);
-    let added=0, updated=0;
-    extracted.forEach(c=>{
-      if(!c.name&&!c.email) return;
-      const email=(c.email||'').trim().toLowerCase();
-      const existing = email ? s.contacts.find(x=>x.email===email) : null;
-      if(existing){
-        // Upsert — update fields if we have better data
-        if(c.name&&!existing.name) existing.name=c.name;
-        if(c.phone&&!existing.phone) existing.phone=c.phone;
-        if(c.firm&&!existing.firm) existing.firm=c.firm;
-        if(c.role&&!existing.role) existing.role=c.role;
-        existing.lastSeen=today;
-        updated++;
-      } else {
-        s.contacts.push({
-          id:'con-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),
-          name:c.name||'', email,
-          phone:c.phone||'', firm:c.firm||'', role:c.role||'',
-          notes: insuredName ? 'Re: '+insuredName : '',
-          source:'ingest', lastSeen:today
-        });
-        added++;
-      }
-    });
-    ss(s);
-    if(added||updated) console.log(`Contacts: +${added} added, ${updated} updated`);
+    // Use PG upsert endpoint
+    await upsertContacts(extracted, insuredName);
   } catch(e){
     console.warn('Contact extraction failed silently:', e.message);
   }
@@ -7377,49 +7346,10 @@ async function ensureFxRates(base){
 
 // ─── MISSING FUNCTION STUBS (ChatGPT build gaps) ──────────────────────────────
 
-function calcChurnRisk(ins, enq) {
-  var flags = [];
-  var level = 'LOW';
-  var now = new Date();
-
-  // Days to renewal
-  var inception = enq.inceptionDate ? new Date(enq.inceptionDate.split('/').reverse().join('-')) : null;
-  var daysToRenewal = inception ? Math.round((inception - now) / 86400000) : 999;
-  if (daysToRenewal < 30 && (enq.status || '').toLowerCase() !== 'bound') {
-    flags.push('Renewal <30d, not bound');
-    level = 'HIGH';
-  } else if (daysToRenewal < 60) {
-    flags.push('Renewal <60d');
-    if (level !== 'HIGH') level = 'MEDIUM';
-  }
-
-  // Last contact
-  var notes = ins.notes || [];
-  if (notes.length) {
-    var lastNote = notes[notes.length - 1];
-    var lastDate = lastNote.date ? new Date(lastNote.date.split('/').reverse().join('-')) : null;
-    if (lastDate) {
-      var daysSinceContact = Math.round((now - lastDate) / 86400000);
-      if (daysSinceContact > 90) { flags.push('No contact >90d'); level = 'HIGH'; }
-      else if (daysSinceContact > 45) { flags.push('No contact >45d'); if (level !== 'HIGH') level = 'MEDIUM'; }
-    }
-  } else {
-    flags.push('No correspondence on file');
-    if (level !== 'HIGH') level = 'MEDIUM';
-  }
-
-  if (!flags.length) flags.push('On track');
-  var colors = { HIGH: { bg: '#FDEAEA', col: '#C0392B' }, MEDIUM: { bg: '#FFF4E5', col: '#E67E22' }, LOW: { bg: '#E8F5E9', col: '#27AE60' } };
-  var c = colors[level] || colors.LOW;
-  return { level: level, flags: flags, bg: c.bg, col: c.col };
-}
+// calcChurnRisk removed Part 23 — zero callers, read localStorage entities
 
 function cwInit() {
-  // CW panel uses HTML onclick handlers directly (cwRenderBlotter etc.)
-  // This stub prevents the tab() dispatcher from throwing
-  try {
-    if (typeof cwRenderBlotter === 'function') cwRenderBlotter();
-  } catch(e) {}
+  cwRenderBlotter();
 }
 
 function renderLostDeals() {
@@ -7450,10 +7380,222 @@ function renderLostDeals() {
     rows + '</table></div>';
 }
 
-// ─── CW PANEL STUBS (HTML references these but they were never implemented in v15) ──
+// ─── CW PANEL — PG-backed (Part 23 rebuild) ──────────────────────────────────
 
-function cwRenderBlotter() {
-  // Cargo war blotter renders via the extensions.js overrides
+var _cwRisksCache = null;
+
+async function cwGetRisks() {
+  try {
+    var data = await apiFetch('/cw-risks');
+    _cwRisksCache = data.items || [];
+    return _cwRisksCache;
+  } catch(e) {
+    console.error('cwGetRisks failed:', e);
+    return _cwRisksCache || [];
+  }
+}
+
+function cwGetRisksSync() {
+  return _cwRisksCache || [];
+}
+
+async function cwSaveRisk(riskData) {
+  try {
+    if (riskData.id) {
+      await apiFetch('/cw-risks/' + riskData.id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(riskData)});
+    } else {
+      await apiFetch('/cw-risks', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(riskData)});
+    }
+    await cwRenderBlotter();
+  } catch(e) { showNotice('Save failed: ' + e.message, 'err'); }
+}
+
+async function cwDeleteRisk(id) {
+  if (!confirm('Delete this cargo war risk?')) return;
+  try {
+    await apiFetch('/cw-risks/' + id, {method:'DELETE'});
+    showNotice('Deleted', 'ok');
+    await cwRenderBlotter();
+  } catch(e) { showNotice('Delete failed', 'err'); }
+}
+
+async function cwUpdateStatus(id, status) {
+  try {
+    await apiFetch('/cw-risks/' + id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status})});
+    _cwRisksCache = (_cwRisksCache||[]).map(r => r.id === id ? Object.assign({}, r, {status}) : r);
+    cwRenderStats(_cwRisksCache);
+  } catch(e) { showNotice('Update failed', 'err'); }
+}
+
+async function cwUpdateField(id, field, value) {
+  try {
+    var payload = {};
+    payload[field] = value;
+    await apiFetch('/cw-risks/' + id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  } catch(e) { console.error('cwUpdateField failed:', e); }
+}
+
+function cwRenderStats(risks) {
+  var total = risks.length;
+  var enquiry = risks.filter(r => r.status === 'enquiry').length;
+  var quoted = risks.filter(r => ['quoted','rtb'].includes(r.status)).length;
+  var bound = risks.filter(r => r.status === 'bound').length;
+  var activeTsi = risks.filter(r => !['bound','declined'].includes(r.status)).reduce((s,r) => s + (r.tsi||0), 0);
+  var tsiStr = activeTsi > 1e6 ? '$' + (activeTsi/1e6).toFixed(1) + 'M' : activeTsi > 0 ? '$' + activeTsi.toLocaleString() : '—';
+  var el = function(id) { return document.getElementById(id); };
+  if(el('wb-st-total')) el('wb-st-total').textContent = total;
+  if(el('wb-st-enquiry')) el('wb-st-enquiry').textContent = enquiry;
+  if(el('wb-st-quoted')) el('wb-st-quoted').textContent = quoted;
+  if(el('wb-st-bound')) el('wb-st-bound').textContent = bound;
+  if(el('wb-st-tsi')) el('wb-st-tsi').textContent = tsiStr;
+}
+
+var _cwStatusColors = {
+  enquiry: {bg:'#FFF7ED',col:'#92400e'}, quoted: {bg:'#EFF6FF',col:'#1e3a8a'},
+  rtb: {bg:'#F5F3FF',col:'#5B21B6'}, firm: {bg:'#FEF3C7',col:'#92400e'},
+  bound: {bg:'#ECFDF5',col:'#059669'}, declined: {bg:'#FEF2F2',col:'#991B1B'}
+};
+
+async function cwRenderBlotter() {
+  var risks = await cwGetRisks();
+  // Apply filters
+  var statusFilter = (document.getElementById('cw-filter-status')||{}).value || '';
+  var dateFilter = (document.getElementById('cw-filter-date')||{}).value || '';
+  var filtered = risks;
+  if (statusFilter) filtered = filtered.filter(r => r.status === statusFilter);
+  if (dateFilter) filtered = filtered.filter(r => (r.loading_date||'').includes(dateFilter));
+
+  cwRenderStats(risks);
+
+  var thead = document.getElementById('wb-thead-row');
+  var tbody = document.getElementById('wb-tbody');
+  if (!thead || !tbody) return;
+
+  thead.innerHTML = '<th style="width:28px"><input type="checkbox" id="cw-select-all" onchange="cwToggleAll(this.checked)"></th>' +
+    '<th>Vessel</th><th>IMO</th><th>Insured</th><th>Goods</th>' +
+    '<th style="text-align:right">TSI (USD)</th><th>Loading</th><th>Discharge</th>' +
+    '<th>Load date</th><th>Status</th><th>Sbox</th><th>Producer</th><th>Notes</th><th></th>';
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;padding:40px;color:var(--text3)">' +
+      (risks.length ? 'No risks match filters' : 'No cargo war risks yet. Drop .msg files above or add manually.') + '</td></tr>';
+    return;
+  }
+
+  var statusOpts = '<option value="enquiry">Enquiry</option><option value="quoted">Quoted</option>' +
+    '<option value="rtb">Request to Bind</option><option value="firm">Firm order</option>' +
+    '<option value="bound">Bound</option><option value="declined">Declined</option>';
+
+  tbody.innerHTML = filtered.map(function(r) {
+    var sc = _cwStatusColors[r.status] || {bg:'#f9fafb',col:'#374151'};
+    var tsi = r.tsi ? Number(r.tsi).toLocaleString() : '—';
+    return '<tr style="border-bottom:1px solid var(--border)">' +
+      '<td><input type="checkbox" class="cw-sel" data-id="' + r.id + '"></td>' +
+      '<td style="font-weight:600">' + escapeHtml(r.vessel||'—') + '</td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.imo||'') + '</td>' +
+      '<td>' + escapeHtml(r.insured||'—') + '</td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.goods||'—') + '</td>' +
+      '<td style="text-align:right;font-family:var(--font-mono);font-size:11px">' + tsi + '</td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.loading_port||'') + '</td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.discharge_port||'') + '</td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.loading_date||'') + '</td>' +
+      '<td><select onchange="cwUpdateStatus(' + r.id + ',this.value)" style="font-size:10px;padding:2px 4px;border-radius:4px;background:' + sc.bg + ';color:' + sc.col + ';border:1px solid ' + sc.col + '40;font-weight:600">' +
+        statusOpts.replace('value="' + r.status + '"', 'value="' + r.status + '" selected') + '</select></td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.sbox_ref||'') + '</td>' +
+      '<td style="font-size:11px">' + escapeHtml(r.producer||'') + '</td>' +
+      '<td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.notes||'') + '">' + escapeHtml(r.notes||'') + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn sm" onclick="cwEditRisk(' + r.id + ')" style="font-size:10px">Edit</button> ' +
+        '<button class="btn sm" onclick="cwDeleteRisk(' + r.id + ')" style="font-size:10px;color:var(--err)">✕</button>' +
+      '</td></tr>';
+  }).join('');
+}
+
+function cwToggleAll(checked) {
+  document.querySelectorAll('.cw-sel').forEach(function(cb) { cb.checked = checked; });
+}
+
+function cwGetSelectedIds() {
+  return Array.from(document.querySelectorAll('.cw-sel:checked')).map(function(cb) { return parseInt(cb.dataset.id); });
+}
+
+function cwEditRisk(id) {
+  var risks = cwGetRisksSync();
+  var r = risks.find(function(x) { return x.id === id; });
+  if (!r) { showNotice('Risk not found','err'); return; }
+  // Populate the add/edit modal
+  var fields = {
+    'cw-m-vessel': r.vessel, 'cw-m-imo': r.imo, 'cw-m-insured': r.insured,
+    'cw-m-cedant': r.cedant, 'cw-m-goods': r.goods, 'cw-m-tsi': r.tsi,
+    'cw-m-from': r.loading_port, 'cw-m-to': r.discharge_port,
+    'cw-m-loaddate': r.loading_date, 'cw-m-rate': r.quoted_rate,
+    'cw-m-minprem': r.min_premium, 'cw-m-status': r.status,
+    'cw-m-sbox': r.sbox_ref, 'cw-m-producer': r.producer,
+    'cw-m-notes': r.notes, 'cw-m-edit-id': id
+  };
+  Object.keys(fields).forEach(function(fid) {
+    var el = document.getElementById(fid);
+    if (el) el.value = fields[fid] || '';
+  });
+  document.getElementById('cw-modal-title').textContent = 'Edit risk';
+  document.getElementById('cw-modal').style.display = 'block';
+}
+
+function cwOpenAddRisk() {
+  ['cw-m-vessel','cw-m-imo','cw-m-insured','cw-m-cedant','cw-m-goods','cw-m-tsi',
+   'cw-m-from','cw-m-to','cw-m-loaddate','cw-m-rate','cw-m-minprem','cw-m-sbox',
+   'cw-m-producer','cw-m-notes','cw-m-edit-id'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  var statusEl = document.getElementById('cw-m-status');
+  if (statusEl) statusEl.value = 'enquiry';
+  document.getElementById('cw-modal-title').textContent = 'Add risk';
+  document.getElementById('cw-modal').style.display = 'block';
+}
+
+async function cwSaveModal() {
+  var g = function(id) { return (document.getElementById(id)||{}).value||''; };
+  var editId = g('cw-m-edit-id');
+  var payload = {
+    vessel: g('cw-m-vessel'), imo: g('cw-m-imo'), insured: g('cw-m-insured'),
+    cedant: g('cw-m-cedant'), goods: g('cw-m-goods'),
+    tsi: parseFloat(g('cw-m-tsi')) || null,
+    loading_port: g('cw-m-from'), discharge_port: g('cw-m-to'),
+    loading_date: g('cw-m-loaddate'),
+    quoted_rate: parseFloat(g('cw-m-rate')) || null,
+    min_premium: parseFloat(g('cw-m-minprem')) || null,
+    status: g('cw-m-status') || 'enquiry',
+    sbox_ref: g('cw-m-sbox'), producer: g('cw-m-producer'),
+    notes: g('cw-m-notes')
+  };
+  if (!payload.vessel && !payload.insured) { showNotice('Vessel or insured required','err'); return; }
+  try {
+    if (editId) {
+      await apiFetch('/cw-risks/' + editId, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    } else {
+      await apiFetch('/cw-risks', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    }
+    document.getElementById('cw-modal').style.display = 'none';
+    showNotice(editId ? 'Risk updated' : 'Risk added', 'ok');
+    await cwRenderBlotter();
+  } catch(e) { showNotice('Save failed: ' + (e.message||''), 'err'); }
+}
+
+async function cwExportBordereau() {
+  var risks = await cwGetRisks();
+  if (!risks.length) { showNotice('No risks to export','warn'); return; }
+  var headers = ['Vessel','IMO','Insured','Cedant','Goods','TSI','Loading Port','Discharge Port','Loading Date','Rate','Min Premium','Status','Sbox','Producer','Notes'];
+  var rows = risks.map(function(r) {
+    return [r.vessel,r.imo,r.insured,r.cedant,r.goods,r.tsi||'',r.loading_port,r.discharge_port,r.loading_date,r.quoted_rate||'',r.min_premium||'',r.status,r.sbox_ref,r.producer,r.notes].map(function(v) { return '"' + String(v||'').replace(/"/g,'""') + '"'; }).join(',');
+  });
+  var csv = headers.join(',') + '\n' + rows.join('\n');
+  var blob = new Blob([csv], {type:'text/csv'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'cw-bordereau-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  showNotice('✓ Exported ' + risks.length + ' risks', 'ok');
 }
 
 function cwCopyEmail() {
@@ -7461,12 +7603,9 @@ function cwCopyEmail() {
   if (el && el.textContent) navigator.clipboard.writeText(el.textContent).then(function(){ showNotice('Copied','ok'); });
 }
 
-function cwExportBordereau() {
-  showNotice('Bordereau export — use the BDX button in the cargo war panel','warn');
-}
-
 function cwHandleFileInput(input) {
-  if (input && input.files) cwHandleDrop({ dataTransfer: { files: input.files }, preventDefault: function(){} });
+  if (input && input.target && input.target.files) cwHandleDrop({ dataTransfer: { files: input.target.files }, preventDefault: function(){} });
+  else if (input && input.files) cwHandleDrop({ dataTransfer: { files: input.files }, preventDefault: function(){} });
 }
 
 function cwHandleDrop(e) {
@@ -7477,34 +7616,78 @@ function cwHandleDrop(e) {
 }
 
 function cwSetView(view) {
-  var simple = document.getElementById('cw-simple-view');
-  var complex = document.getElementById('cw-complex-view');
-  if (simple) simple.style.display = view === 'simple' ? 'block' : 'none';
-  if (complex) complex.style.display = view === 'complex' ? 'block' : 'none';
+  // Simple/complex toggle — for now just re-render
+  var btn1 = document.getElementById('cw-view-simple');
+  var btn2 = document.getElementById('cw-view-complex');
+  if (btn1) { btn1.style.fontWeight = view === 'simple' ? '600' : '400'; btn1.style.background = view === 'simple' ? '#1a2744' : 'var(--surface)'; btn1.style.color = view === 'simple' ? '#fff' : 'var(--text2)'; }
+  if (btn2) { btn2.style.fontWeight = view === 'complex' ? '600' : '400'; btn2.style.background = view === 'complex' ? '#1a2744' : 'var(--surface)'; btn2.style.color = view === 'complex' ? '#fff' : 'var(--text2)'; }
 }
 
 function cwShowEmailPanel() {
-  var el = document.getElementById('cw-email-panel');
+  var el = document.getElementById('wb-email-panel');
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function cwSetCompliance(riskId, status) {
-  var risks = typeof cwGetRisks === 'function' ? cwGetRisks() : [];
-  var r = risks.find(function(x) { return x.id === riskId; });
-  if (r) {
-    r.compliance = status;
-    if (typeof cwSaveRisks === 'function') cwSaveRisks(risks);
-    if (typeof cwRenderBlotter === 'function') cwRenderBlotter();
+async function cwSetCompliance(riskId, status) {
+  try {
+    await apiFetch('/cw-risks/' + riskId, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({compliance: status})});
     showNotice('Compliance: ' + status, 'ok');
-  }
+    await cwRenderBlotter();
+  } catch(e) { showNotice('Update failed', 'err'); }
 }
 
 function cwRunAIScreen(riskId) {
   showNotice('AI compliance screen — open via the ⚖ button on individual risks', 'warn');
 }
 
-function cwGenerateEmail() {
-  showNotice('Generate email — use the email button in the cargo war panel', 'warn');
+async function cwGenerateEmail() {
+  var risks = await cwGetRisks();
+  var filter = (document.getElementById('cw-email-filter')||{}).value || 'all';
+  var active;
+  if (filter === 'all') active = risks.filter(r => !['bound','declined'].includes(r.status));
+  else if (filter === 'selected') { var ids = cwGetSelectedIds(); active = risks.filter(r => ids.includes(r.id)); }
+  else active = risks.filter(r => r.status === filter);
+  if (!active.length) { showNotice('No risks match filter','warn'); return; }
+  var to = (document.getElementById('cw-email-to')||{}).value || 'Roger Spicer; Munchie Turner';
+  var today = new Date();
+  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var dateStr = String(today.getDate()).padStart(2,'0') + '-' + months[today.getMonth()] + '-' + today.getFullYear();
+
+  // Build email table
+  var header = '<tr style="background:#003366;color:#fff;font-size:11px"><th style="padding:4px 8px">Vessel</th><th style="padding:4px 8px">Goods</th><th style="padding:4px 8px">Loading</th><th style="padding:4px 8px">Discharge</th><th style="padding:4px 8px">TSI (USD)</th><th style="padding:4px 8px">Status</th><th style="padding:4px 8px">Notes</th></tr>';
+  var rows = active.map(function(r) {
+    var tsi = r.tsi ? Number(r.tsi).toLocaleString() : 'TBC';
+    return '<tr style="font-size:11px;border-bottom:1px solid #ddd"><td style="padding:4px 8px;font-weight:600">' + escapeHtml(r.vessel||'TBC') + '</td>' +
+      '<td style="padding:4px 8px">' + escapeHtml(r.goods||'TBC') + '</td>' +
+      '<td style="padding:4px 8px">' + escapeHtml(r.loading_port||'TBC') + '</td>' +
+      '<td style="padding:4px 8px">' + escapeHtml(r.discharge_port||'TBC') + '</td>' +
+      '<td style="padding:4px 8px;text-align:right">' + tsi + '</td>' +
+      '<td style="padding:4px 8px">' + escapeHtml(r.status||'') + '</td>' +
+      '<td style="padding:4px 8px">' + escapeHtml(r.notes||'') + '</td></tr>';
+  }).join('');
+
+  var html = '<p style="font-family:Calibri,sans-serif;font-size:13px">Dear ' + escapeHtml(to) + ',</p>' +
+    '<p style="font-family:Calibri,sans-serif;font-size:13px">Please find below our current cargo war enquiries as at ' + dateStr + '.</p>' +
+    '<table style="border-collapse:collapse;width:100%;margin:12px 0">' + header + rows + '</table>' +
+    '<p style="font-family:Calibri,sans-serif;font-size:13px">Please confirm rates and availability at your earliest convenience.</p>' +
+    '<p style="font-family:Calibri,sans-serif;font-size:13px">Best regards,<br>Maisie Moss<br>OG Broking Limited</p>';
+
+  var outEl = document.getElementById('cw-email-out');
+  if (outEl) { outEl.innerHTML = html; window._cwLastEmailHtml = html; }
+  document.getElementById('wb-email-panel').style.display = 'block';
+  showNotice('✓ Email generated — ' + active.length + ' risks', 'ok');
+}
+
+async function migrateLocalCwToPG() {
+  var s = gs();
+  var cw = s.cwRisks || [];
+  if (!cw.length) { showNotice('No CW risks in browser storage','warn'); return; }
+  if (!confirm('Import ' + cw.length + ' cargo war risks from browser to server?')) return;
+  try {
+    var resp = await apiFetch('/cw-risks/import', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({risks: cw})});
+    showNotice('✓ Imported ' + resp.added + ' risks. Total: ' + resp.total, 'ok');
+    await cwRenderBlotter();
+  } catch(e) { showNotice('Import failed','err'); }
 }
 
 function importBookSpreadsheet() {

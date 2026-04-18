@@ -1,5 +1,5 @@
 # OG Broking Placement Tool — Project Bible
-**Last updated: Part 22, 18 Apr 2026 · Build v22.0**
+**Last updated: Part 23, 18 Apr 2026 · Build v23.0**
 
 ---
 
@@ -12,7 +12,7 @@ Frontend is plain HTML/CSS/JS (no framework) deployed on Netlify. Backend is Pyt
 **Live URL:** https://ogbcargotool.netlify.app
 **Backend:** https://og-backend-production.up.railway.app
 **GitHub:** https://github.com/aceeagles1981/ogb-tool (public)
-**Current build:** v22.0 · 18 Apr 2026
+**Current build:** v23.0 · 18 Apr 2026
 
 ---
 
@@ -59,10 +59,10 @@ Frontend is plain HTML/CSS/JS (no framework) deployed on Netlify. Backend is Pyt
 ### Frontend (Netlify)
 ```
 frontend/
-  index.html              (2,482 lines — v22.0)
+  index.html              (2,510 lines — v23.0)
   css/app.css
   js/
-    main.js               (8,352 lines — core app, pipeline, accounts, entities, ingest, post-bind, MI, P7, P8, ledger CRUD. Zero entGetState callers.)
+    main.js               (8,583 lines — core app, pipeline, accounts, entities, ingest, post-bind, MI, P7, P8, ledger CRUD, contacts PG, CW blotter PG. Zero entGetState callers.)
     workflow.js            (991 lines — workflow UI, tabbed card, save, apply, auto-compliance, auto-tick, auto-market-extract)
     comparison.js          (255 lines — terms comparison UI)
     extensions.js          (444 lines — CW improvements, RTB)
@@ -82,7 +82,7 @@ All scripts load via `<script src>` tags in index.html. All share `window` scope
 ### Backend (Railway)
 ```
 backend/
-  app.py                  (3,939 lines — Flask, CORS, auth, risk/task/ledger CRUD+delete, entity CRUD, compliance, auto-tick, cleanup, MI, P7, P8, company research, duplicate detection)
+  app.py                  (4,479 lines — Flask, CORS, auth, risk/task/ledger CRUD+delete, entity CRUD, contacts CRUD, cw_risks CRUD, compliance, auto-tick, cleanup, MI, P7, P8, company research, duplicate detection)
   doc_extract.py          (499 lines — AI extraction + classification prompts)
   workflow.py             (395 lines — workflow endpoint + output generation)
   comparison.py           (646 lines — terms comparison across market quotes)
@@ -142,6 +142,15 @@ market_interactions — id, risk_id, entity_id, underwriter, contact_name, syndi
 market_rules       — id, underwriter, syndicate, rule_type, product, territory, exclusion,
                      source_interaction_id, notes, active, created_at
 
+contacts           — id, name, email, phone, firm, role, notes, source,
+                     last_seen (DATE), created_at, updated_at
+
+cw_risks           — id, vessel, imo, insured, cedant, goods, tsi (NUMERIC),
+                     loading_port, discharge_port, loading_date, quoted_rate (NUMERIC),
+                     min_premium (NUMERIC), status, compliance, sbox_ref, producer_ref,
+                     producer, sender, buyer, bdx_month, notes, source_filename,
+                     created_at, updated_at
+
 accounts           — id, canonical_name, producer, region, handler, status, notes, created_at, updated_at
 matters            — id, account_id, title, matter_type, status, created_at, updated_at
 events             — id, account_id, matter_id, source_type, event_at, subject, sender,
@@ -192,8 +201,8 @@ Producer (entity_type='producer')
 | Book view + FX panel | PostgreSQL (/portfolio-by-year) | ✅ Primary (Part 21) |
 | Renewal pack generator | PostgreSQL (/risks) | ✅ Primary (Part 21) |
 | Data export (entities) | PostgreSQL (fetchEntityList API) | ✅ Primary (Part 22) |
-| Cargo war blotter | localStorage | Legacy |
-| Contacts / address book | localStorage | Legacy |
+| Cargo war blotter | PostgreSQL `cw_risks` | ✅ Primary (Part 23) |
+| Contacts / address book | PostgreSQL `contacts` | ✅ Primary (Part 23) |
 | Clause library, slip library | localStorage | Legacy |
 | Book rows (manual) | localStorage | Legacy |
 | Proposal form, SOV | localStorage | Legacy |
@@ -224,6 +233,25 @@ Producer (entity_type='producer')
 | POST | `/entities/:id/research` | **P21:** AI company research → saves as entity note |
 | POST | `/entities/import` | Bulk import from localStorage JSON |
 | GET | `/entities/duplicates` | **P21:** Trigram similarity duplicate detection |
+
+### Contacts (Part 23)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/contacts` | List with optional `?q=` search |
+| POST | `/contacts` | Create (email dedup check) |
+| PATCH | `/contacts/:id` | Update fields |
+| DELETE | `/contacts/:id` | Delete with audit log |
+| POST | `/contacts/import` | Bulk import from localStorage JSON |
+| POST | `/contacts/upsert` | Upsert from email ingest |
+
+### Cargo War Risks (Part 23)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/cw-risks` | List with optional `?status=` filter |
+| POST | `/cw-risks` | Create |
+| PATCH | `/cw-risks/:id` | Update fields |
+| DELETE | `/cw-risks/:id` | Delete with audit log |
+| POST | `/cw-risks/import` | Bulk import from localStorage JSON |
 
 ### Compliance & Auto-tick
 | Method | Path | Purpose |
@@ -465,11 +493,11 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 
 ### Pre-Present Checklist
 1. `node --check` on every modified JS file
-2. `python3 -c "import py_compile; py_compile.compile('backend/app.py                  (4,003 lines — +64: DELETE ledger, GET /mi/ledger-summary)
+2. `python3 -c "import py_compile; py_compile.compile('backend/app.py', doraise=True)"`
 3. Grep for the fix — confirm present in output
 4. HTML ends with `</body>\n</html>`
 5. Check `var`/`const` collisions for top-level declarations
-6. Verify files in `frontend/` not repo root (and root `app.py` matches `backend/app.py                  (4,003 lines — +64: DELETE ledger, GET /mi/ledger-summary)
+6. Verify files in `frontend/` not repo root (and root `app.py` matches `backend/app.py`)
 
 ---
 
@@ -504,6 +532,9 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 | Ledger CRUD on risk card | ✅ | **P22:** Summary tiles, add form, delete, running totals |
 | dataexport.js removed | ✅ | **P22:** Was broken (called deleted entGetState), duplicate modal removed |
 | AP/RP Summary panel PG-backed | ✅ | **P22:** patches.js rewritten to use /mi/ledger-summary |
+| Contacts PG-backed | ✅ | **P23:** 6 endpoints, search, upsert from ingest, bulk import |
+| MI renewals error handling | ✅ | **P23:** Defensive type casting + traceback wrapper |
+| CW blotter PG-backed | ✅ | **P23:** Full rebuild — 5 endpoints, CRUD, email gen, CSV export, modal |
 | Junk risk cleanup | ✅ | Preview + delete by criteria |
 | Done tasks visual styling | ✅ | Opacity, strikethrough, ✓ replaces Done button |
 | Rate limit debounce | ✅ | Per-task guard prevents rapid-click 429s |
@@ -518,7 +549,7 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 
 1. **N/R and Quote Leader blank for batch risks** — only populated via workflow path.
 2. **Ekol seed data approximate** — line sizes estimated from general knowledge, not verified against actual placement records. Review and adjust.
-3. **`calcChurnRisk` reads localStorage** — churn risk calculation uses localStorage entity notes. Not called from any active view since home page was rewritten.
+3. **CW email ingest not yet wired** — drop zone routes to general email ingest, not CW-specific parser. Manual add works. Email-to-CW-risk pipeline is a future priority.
 5. **CW blotter, contacts, clause/slip library, SOV still in localStorage** — these are independent modules that don't interact with the entity/risk PG system.
 
 ---
@@ -550,15 +581,21 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 | — | AP/RP ledger CRUD on risk card | ✅ Done (Part 22) |
 | — | AP/RP Summary panel → PG (patches.js rewrite) | ✅ Done (Part 22) |
 
+| — | Contacts → PG | ✅ Done (Part 23) | — |
+| — | `/mi/renewals` 500 fix | ✅ Done (Part 23) | — |
+| — | `calcChurnRisk` dead code removal | ✅ Done (Part 23) | — |
+
+| — | CW blotter rebuild (PG-backed) | ✅ Done (Part 23) | — |
+
 ### Next priorities
 | # | Priority | Effort |
 |---|----------|--------|
-| 1 | Test all Part 21+22 features against live deployment | 1 hour |
-| 2 | Test ledger CRUD + AP/RP Summary panel | 15 min |
-| 3 | Review Ekol seed data against actual placement | 15 min |
-| 4 | CW blotter → PG (if warranted) | 1-2 sessions |
-| 5 | Book rows → PG (portfolio-by-year endpoint exists, needs write path) | 1 session |
-| 6 | Contacts / address book → PG | 1 session |
+| 1 | Deploy + test contacts + CW migration | 10 min |
+| 2 | Test `/mi/renewals` fix live | 2 min |
+| 3 | Run seed buttons (seedPPAQ, seedEkol) + verify scorecards | 5 min |
+| 4 | Wire CW email ingest (drop .msg → create cw_risk in PG) | 1 session |
+| 5 | Book rows → PG (write path — read exists via /portfolio-by-year) | 1 session |
+| 6 | Clause/slip library → PG | 1 session |
 
 ---
 
@@ -580,7 +617,7 @@ Broker logs market interaction (manual form OR auto-extracted from email)
 ### GitHub
 - Repo: `aceeagles1981/ogb-tool` (public)
 - Use GitHub Desktop for multi-file commits (one push = one deploy)
-- Root `app.py` must match `backend/app.py                  (4,003 lines — +64: DELETE ledger, GET /mi/ledger-summary)
+- Root `app.py` must match `backend/app.py` (4,479 lines)
 
 ---
 
