@@ -8381,9 +8381,19 @@ function cleanNoteSummary(text) {
       var obj = JSON.parse(s);
       if (obj.summary) return obj.summary;
     } catch(e) {
-      // Partial JSON — try extracting summary with regex
+      // Partial/truncated JSON — try extracting summary with regex
+      // First try complete quoted value
       var m = s.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
       if (m) return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+      // Then try truncated value (no closing quote)
+      var m2 = s.match(/"summary"\s*:\s*"([\s\S]+)/);
+      if (m2) {
+        var val = m2[1];
+        // Strip trailing junk: closing braces, other JSON fields
+        val = val.replace(/",?\s*"[a-zA-Z_]+"\s*:[\s\S]*$/, '');
+        val = val.replace(/["\s}]+$/, '');
+        return val.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+      }
     }
   }
   return s;
